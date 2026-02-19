@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import os
+import zipfile
 from pathlib import Path
 
 import cdsapi
@@ -159,6 +160,7 @@ def _download_orography(
         return
 
     logger.info("Downloading ERA5-Land orography → %s", orography_file)
+    tmp_file = output_dir / "era5land_orography.download"
     client.retrieve(
         era5_cfg["product"],
         {
@@ -170,8 +172,9 @@ def _download_orography(
             "format": "netcdf",
             "area": era5_cfg["area"],
         },
-        str(orography_file),
+        str(tmp_file),
     )
+    _extract_if_zip(tmp_file, orography_file)
     logger.info("Orography download complete.")
 
 
@@ -217,8 +220,46 @@ def _download_forcing_year(
         "area": era5_cfg["area"],
     }
 
-    client.retrieve(era5_cfg["product"], request_body, str(out_file))
+    tmp_file = output_dir / f"era5land_forcing_{year}.download"
+    client.retrieve(era5_cfg["product"], request_body, str(tmp_file))
+    _extract_if_zip(tmp_file, out_file)
     logger.info("ERA5-Land forcing %d → %s", year, out_file)
+
+
+# ---------------------------------------------------------------------------
+# ZIP extraction helper (new CDS API wraps NetCDF in a zip)
+# ---------------------------------------------------------------------------
+def _extract_if_zip(src: Path, dst: Path) -> None:
+    """
+    Move *src* to *dst*, transparently extracting a ZIP if necessary.
+
+    The new Copernicus CDS API (2024+) wraps NetCDF files in a single-entry
+    ZIP archive.  This function detects the ZIP, extracts ``data_0.nc`` (the
+    conventional inner filename), renames it to *dst*, and removes the
+    original download file.  If *src* is already a plain NetCDF it is simply
+    renamed to *dst*.
+
+    Parameters
+    ----------
+    src : Path
+        Raw file as returned by ``client.retrieve()`` (may be ZIP or NetCDF).
+    dst : Path
+        Final destination path, always a ``.nc`` file.
+    """
+    if zipfile.is_zipfile(src):
+        with zipfile.ZipFile(src) as zf:
+            members = zf.namelist()
+            if not members:
+                raise RuntimeError(f"Empty ZIP from CDS: {src}")
+            # Extract the first NetCDF member (typically 'data_0.nc')
+            nc_member = next((m for m in members if m.endswith(".nc")), members[0])
+            extracted = src.parent / nc_member
+            zf.extract(nc_member, src.parent)
+        extracted.rename(dst)
+        src.unlink(missing_ok=True)
+        logger.debug("ZIP extracted: %s → %s", src.name, dst.name)
+    else:
+        src.rename(dst)
 
 
 # ---------------------------------------------------------------------------

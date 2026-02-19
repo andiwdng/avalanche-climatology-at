@@ -207,7 +207,8 @@ def _process_forcing_year(
             result[t] = _bilinear_interp_scalar(lat_vals, lon_vals, arr[t], lat_target, lon_target)
         return result
 
-    time_index = pd.DatetimeIndex(ds["time"].values)
+    time_coord = "time" if "time" in ds.coords else "valid_time"
+    time_index = pd.DatetimeIndex(ds[time_coord].values)
 
     # --- 2 m temperature [K] ---
     ta_raw = _interp(ds["t2m"])
@@ -435,7 +436,8 @@ def _load_orography(era5_dir: Path) -> dict:
     # Variable name for geopotential in ERA5-Land
     orog_var = "z" if "z" in ds else "Z"
 
-    geopotential = ds[orog_var].isel(time=0) if "time" in ds[orog_var].dims else ds[orog_var]
+    time_dim = next((d for d in ds[orog_var].dims if "time" in d), None)
+    geopotential = ds[orog_var].isel({time_dim: 0}) if time_dim else ds[orog_var]
     z_metres = (geopotential / _GRAVITY).values  # convert Φ [m² s⁻²] → z [m]
 
     result = {
