@@ -1,0 +1,225 @@
+# ============================================================
+# Avalanche Climatology Pipeline — Configuration
+# Austrian Alps following Reuter et al. (2023) methodology
+# ============================================================
+
+# ------------------------------------------------------------------
+# Study regions: representative points across Austrian avalanche
+# warning regions (ZAMG / LWD nomenclature).  Each lat/lon is the
+# geometric centroid of the climatologically relevant massif.
+# ------------------------------------------------------------------
+regions:
+  bregenzerwald:
+    name: "Bregenzerwald"
+    lat: 47.40
+    lon: 9.95
+    province: "Vorarlberg"
+    lwd: "LWD Vorarlberg"
+
+  arlberg:
+    name: "Arlberg"
+    lat: 47.20
+    lon: 10.30
+    province: "Vorarlberg/Tirol"
+    lwd: "LWD Vorarlberg / LWD Tirol"
+
+  silvretta:
+    name: "Silvretta"
+    lat: 46.90
+    lon: 10.05
+    province: "Vorarlberg/Tirol"
+    lwd: "LWD Tirol"
+
+  oetztal:
+    name: "Ötztaler Alpen"
+    lat: 46.90
+    lon: 10.85
+    province: "Tirol"
+    lwd: "LWD Tirol"
+
+  stubai:
+    name: "Stubaier Alpen"
+    lat: 47.05
+    lon: 11.30
+    province: "Tirol"
+    lwd: "LWD Tirol"
+
+  zillertal:
+    name: "Zillertaler Alpen"
+    lat: 47.10
+    lon: 11.85
+    province: "Tirol"
+    lwd: "LWD Tirol"
+
+  kitzbuehel:
+    name: "Kitzbüheler Alpen"
+    lat: 47.45
+    lon: 12.35
+    province: "Tirol"
+    lwd: "LWD Tirol"
+
+  hohe_tauern:
+    name: "Hohe Tauern"
+    lat: 47.10
+    lon: 12.70
+    province: "Tirol/Salzburg/Kärnten"
+    lwd: "LWD Tirol / LAWIS Salzburg"
+
+  salzburg_kalkalpen:
+    name: "Salzburger Kalkalpen"
+    lat: 47.55
+    lon: 13.40
+    province: "Salzburg"
+    lwd: "LAWIS Salzburg"
+
+  dachstein:
+    name: "Dachstein"
+    lat: 47.47
+    lon: 13.61
+    province: "Salzburg/Steiermark"
+    lwd: "LAWIS Salzburg / LWD Steiermark"
+
+  schladminger_tauern:
+    name: "Schladminger Tauern"
+    lat: 47.35
+    lon: 13.80
+    province: "Steiermark"
+    lwd: "LWD Steiermark"
+
+  villacher_alpen:
+    name: "Villacher Alpen / Karawanken"
+    lat: 46.55
+    lon: 13.95
+    province: "Kärnten"
+    lwd: "LWD Kärnten"
+
+# ------------------------------------------------------------------
+# Elevation bands for point SNOWPACK simulations (metres a.s.l.)
+# ------------------------------------------------------------------
+elevation_bands: [1500, 2000, 2500, 3000]
+
+# ------------------------------------------------------------------
+# Simulation period
+# The pipeline downloads ERA5 and SPARTACUS for the full period
+# including spin_up_years before analysis_start.
+# SNOWPACK runs from download_start; climatology is computed from
+# analysis_start onward.
+# ------------------------------------------------------------------
+simulation:
+  analysis_start: "2000-10-01"   # first season fully analysed
+  analysis_end:   "2021-04-30"   # last day of last season
+  spin_up_years: 1               # years of SNOWPACK spin-up (no data in output)
+  season_start_month: 10         # October — start of avalanche season
+  season_end_month: 4            # April   — end of avalanche season
+
+# ------------------------------------------------------------------
+# ERA5-Land download settings
+# CDS API credentials must be placed in ~/.cdsapirc  (default) or
+# in the path specified below.
+# ------------------------------------------------------------------
+era5:
+  cds_api_rc: "~/.cdsapirc"
+  product: "reanalysis-era5-land"
+  # Austria bounding box: N, W, S, E
+  area: [49.0, 9.5, 46.3, 17.2]
+  # Variables downloaded from CDS
+  variables:
+    - "2m_temperature"
+    - "2m_dewpoint_temperature"
+    - "total_precipitation"
+    - "surface_pressure"
+    - "10m_u_component_of_wind"
+    - "10m_v_component_of_wind"
+    - "surface_solar_radiation_downwards"
+    - "surface_thermal_radiation_downwards"
+    - "orography"                          # for lapse-rate correction
+  native_resolution_km: 9.0
+  # Lapse rates applied when correcting ERA5 native elevation → target elevation
+  lapse_rate_temperature:  -0.0065   # K m⁻¹  (ICAO standard atmosphere)
+  lapse_rate_precipitation:  0.0003  # fractional increase per metre (+3 % per 100 m)
+
+# ------------------------------------------------------------------
+# SPARTACUS bias-correction settings
+# GeoSphere Austria SPARTACUS-v2 daily gridded dataset (~1 km)
+# REST API endpoint: https://dataset.api.hub.zamg.ac.at
+# ------------------------------------------------------------------
+spartacus:
+  api_base: "https://dataset.api.hub.zamg.ac.at/v1/grid-hist/spartacus-v2-1d-1km"
+  # Austria bounding box: minlon, minlat, maxlon, maxlat
+  bbox: [9.5, 46.3, 17.2, 49.0]
+  # Parameters to download
+  parameters:
+    temperature: "Tl"       # daily mean air temperature [°C]
+    precipitation: "RR"     # daily precipitation sum [mm]
+  interpolation: "bilinear"
+
+# ------------------------------------------------------------------
+# SNOWPACK simulation settings
+# ------------------------------------------------------------------
+snowpack:
+  binary: "/usr/local/bin/snowpack"      # adjust to installed location
+  slope_angle: 0.0                       # flat-field simulation
+  aspect: 0.0                            # irrelevant for flat field
+  calculation_step_length: 15            # minutes (SNOWPACK internal timestep)
+  meteo_step_length: 60                  # minutes (ERA5 hourly forcing)
+  # Initial soil parameters
+  soil_albedo: 0.09
+  bare_soil_z0: 0.020                    # roughness length [m]
+  # Output profiles written every N steps (1 = every hourly step)
+  profile_output_step: 24               # write PRO profile once per day
+  # SNOWPACK stability output
+  stability: true
+  meteo_output: false
+
+# ------------------------------------------------------------------
+# AVAPRO / AWSoM settings
+# ------------------------------------------------------------------
+avapro:
+  binary: "/usr/local/bin/avapro"
+  # Minimum profile depth [m] for problem classification
+  min_profile_depth: 0.10
+  # Avalanche problem type labels (must match AVAPRO output column names)
+  problem_columns:
+    new_snow: "new_snow"
+    wind_slab: "wind_slab"
+    persistent_wl: "persistent_wl"
+    wet_snow: "wet_snow"
+    glide_snow: "glide_snow"
+
+# ------------------------------------------------------------------
+# Clustering settings  (Reuter et al. 2023 methodology)
+# ------------------------------------------------------------------
+clustering:
+  n_clusters: 4             # number of avalanche climate types
+  random_state: 42
+  n_init: 50                # number of k-means initialisations
+  # Variables used for clustering (must match climatology.py output columns)
+  variables:
+    - "new_snow_days"
+    - "pwl_days"
+    - "wet_snow_onset_doy"
+    - "total_problem_days"
+  # Reference elevation for clustering (metres)
+  reference_elevation: 2000
+
+# ------------------------------------------------------------------
+# File paths  (relative to repository root)
+# ------------------------------------------------------------------
+paths:
+  era5_raw:        "data/era5_raw"
+  spartacus:       "data/spartacus"
+  snowpack_input:  "data/snowpack_input"
+  snowpack_output: "data/snowpack_output"
+  avapro_output:   "data/avapro_output"
+  figures:         "figures"
+  logs:            "logs"
+
+# ------------------------------------------------------------------
+# Plotting settings
+# ------------------------------------------------------------------
+plotting:
+  dpi: 150
+  figure_format: "pdf"       # pdf | png | svg
+  colormap_clusters: "tab10"
+  colormap_problems: "Set2"
+  season_labels: true

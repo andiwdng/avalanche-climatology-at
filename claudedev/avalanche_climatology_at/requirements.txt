@@ -1,0 +1,41 @@
+# Avalanche Climatology Pipeline — Python dependencies
+# Compatible with Python 3.11
+# Install with: pip install -r requirements.txt
+
+# Core scientific stack
+numpy>=1.25.0
+scipy>=1.11.0
+pandas>=2.0.0
+
+# NetCDF / xarray ecosystem
+xarray>=2023.6.0
+netCDF4>=1.6.4
+h5netcdf>=1.2.0
+dask>=2023.9.0          # optional parallel I/O for large ERA5 files
+
+# Geospatial
+rasterio>=1.3.9
+geopandas>=0.14.0
+pyproj>=3.6.0
+shapely>=2.0.0
+
+# Interpolation / regridding
+scipy>=1.11.0           # griddata, RegularGridInterpolator (already listed above)
+
+# Climate data access
+cdsapi>=0.6.1           # Copernicus Climate Data Store API client
+requests>=2.31.0        # SPARTACUS REST API
+
+# Machine learning (clustering)
+scikit-learn>=1.3.0
+
+# Visualisation
+matplotlib>=3.8.0
+seaborn>=0.13.0
+cartopy>=0.22.0         # optional: for map-based cluster plots
+
+# Utilities
+pyyaml>=6.0
+tqdm>=4.66.0            # progress bars for long downloads
+joblib>=1.3.0           # parallel SNOWPACK runs
+python-dateutil>=2.8.2
