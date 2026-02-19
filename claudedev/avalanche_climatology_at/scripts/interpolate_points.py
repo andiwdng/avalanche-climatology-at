@@ -231,7 +231,7 @@ def _process_forcing_year(
 
     # --- De-accumulate precipitation [m h⁻¹] → [mm h⁻¹] ---
     tp_acc = _interp(ds["tp"])
-    psum = _deaccumulate(tp_acc, time_index) * 1000.0  # m → mm
+    psum = _deaccumulate(tp_acc, time_index, scale=1.0) * 1000.0  # m → mm/h
 
     # --- Surface pressure [Pa] ---
     pressure = _interp(ds["sp"])
@@ -314,14 +314,15 @@ def _uv_to_met_direction(u: np.ndarray, v: np.ndarray) -> np.ndarray:
 def _deaccumulate(
     acc: np.ndarray,
     time_index: pd.DatetimeIndex,
+    *,
+    scale: float = 1.0 / 3600.0,
 ) -> np.ndarray:
     """
     Convert ERA5-Land time-accumulated fields to per-hour rates.
 
     ERA5-Land resets accumulations to zero at 00:00 UTC each day (for
     hourly analysis data).  Hourly differences are computed; any
-    negative difference (reset artefact) is set to zero.  Rates are
-    then divided by 3600 s for radiation fields.
+    negative difference (reset artefact) is set to zero.
 
     Parameters
     ----------
@@ -329,22 +330,30 @@ def _deaccumulate(
         Accumulated field values (time axis).
     time_index : pd.DatetimeIndex
         Corresponding timestamps.
+    scale : float
+        Multiply the raw hourly increment by this factor before returning.
+        Default ``1/3600`` converts J m⁻² h⁻¹ → W m⁻² (radiation).
+        Pass ``1.0`` for precipitation (m h⁻¹), then multiply by 1000
+        in the caller to obtain mm h⁻¹.
 
     Returns
     -------
     np.ndarray
-        Per-hour rates in SI units (W m⁻² for radiation; m h⁻¹ for tp).
+        Per-hour increments multiplied by *scale*.
     """
-    rates = np.diff(acc, prepend=acc[0])
-    # Reset at midnight: ERA5 accumulation restarts; diff at 01:00 is valid
-    # but at 00:00 the accumulation is near-zero → use raw value at 00:00
+    # ERA5-Land accumulation convention:
+    #   - The value at 00:00 is a carry-over of the PREVIOUS day's full
+    #     accumulation (it equals the previous 23:00 value).
+    #   - The accumulation for day D restarts at 01:00 (which equals 0 or the
+    #     first-hour increment since midnight).
+    # Therefore the 00:00 values must be zeroed out; the large negative diff
+    # at 01:00 (new start minus previous carry-over) is also clipped to zero.
+    rates = np.diff(acc, prepend=0)
     midnight_mask = (time_index.hour == 0)
-    rates[midnight_mask] = acc[midnight_mask]
-    # Clip negative artefacts
+    rates[midnight_mask] = 0
+    # Clip negative artefacts (e.g. the large drop at 01:00 from carry-over)
     rates = np.maximum(rates, 0.0)
-    # Convert from J m⁻² per hour to W m⁻² (for radiation)
-    # For precipitation (tp) the caller multiplies separately
-    return rates / 3600.0
+    return rates * scale
 
 
 # ---------------------------------------------------------------------------
