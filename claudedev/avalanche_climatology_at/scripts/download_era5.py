@@ -75,6 +75,15 @@ ALL_HOURS: list[str] = [f"{h:02d}:00" for h in range(24)]
 ALL_DAYS: list[str] = [f"{d:02d}" for d in range(1, 32)]
 ALL_MONTHS: list[str] = [f"{m:02d}" for m in range(1, 13)]
 
+# CDS ERA5-Land rejects full-year single-variable requests.
+# Quarterly chunks (3 months × 1 variable) fit within the cost limit.
+QUARTERS: list[list[str]] = [
+    ["01", "02", "03"],
+    ["04", "05", "06"],
+    ["07", "08", "09"],
+    ["10", "11", "12"],
+]
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -159,12 +168,18 @@ def _download_orography(
         logger.info("Orography file already exists, skipping: %s", orography_file)
         return
 
-    logger.info("Downloading ERA5-Land orography → %s", orography_file)
+    # ERA5-Land static invariant fields (orography/geopotential) are not
+    # available via the ERA5-Land CDS product.  The terrain model is shared
+    # with ERA5 and must be fetched from 'reanalysis-era5-single-levels'.
+    # The 0.25° ERA5 resolution is sufficient for lapse-rate interpolation.
+    logger.info("Downloading surface geopotential (orography) from ERA5 single-levels → %s",
+                orography_file)
     tmp_file = output_dir / "era5land_orography.download"
     client.retrieve(
-        era5_cfg["product"],
+        "reanalysis-era5-single-levels",
         {
-            "variable": ["orography"],
+            "product_type": "reanalysis",
+            "variable": ["geopotential"],
             "year": "2000",
             "month": "01",
             "day": "01",
@@ -187,7 +202,12 @@ def _download_forcing_year(
     """
     Download hourly ERA5-Land forcing variables for a single calendar year.
 
-    CDS requests all months, days and hours at once for efficiency.
+    The CDS API enforces a per-request size limit that prevents downloading
+    all eight variables for a full year in one request.  To stay within
+    these limits, each variable is downloaded individually (one CDS job per
+    variable) and the resulting files are merged with xarray into a single
+    annual NetCDF ``era5land_forcing_{year}.nc``.
+
     ERA5-Land time-accumulated variables (ssrd, strd, tp) are accumulated
     since 00:00 UTC each day; de-accumulation is performed in
     :mod:`scripts.interpolate_points`.
@@ -203,27 +223,70 @@ def _download_forcing_year(
     output_dir : Path
         Directory where the annual file is saved.
     """
+    import xarray as xr
+
     out_file = output_dir / f"era5land_forcing_{year}.nc"
     if out_file.exists():
         logger.info("ERA5 forcing %d already downloaded, skipping.", year)
         return
 
-    logger.info("Requesting ERA5-Land forcing for year %d …", year)
+    import shutil
+    import xarray as xr
 
-    request_body = {
-        "variable": FORCING_VARIABLES,
-        "year": str(year),
-        "month": ALL_MONTHS,
-        "day": ALL_DAYS,
-        "time": ALL_HOURS,
-        "format": "netcdf",
-        "area": era5_cfg["area"],
-    }
+    # Staging directory for quarterly per-variable chunks
+    stage_dir = output_dir / f"_stage_{year}"
+    stage_dir.mkdir(exist_ok=True)
 
-    tmp_file = output_dir / f"era5land_forcing_{year}.download"
-    client.retrieve(era5_cfg["product"], request_body, str(tmp_file))
-    _extract_if_zip(tmp_file, out_file)
-    logger.info("ERA5-Land forcing %d → %s", year, out_file)
+    chunk_files: list[Path] = []
+    for variable in FORCING_VARIABLES:
+        for q_idx, months in enumerate(QUARTERS, start=1):
+            chunk_nc = stage_dir / f"{variable}_Q{q_idx}.nc"
+            if chunk_nc.exists():
+                logger.info("  [%d] %s Q%d already on disk.", year, variable, q_idx)
+            else:
+                logger.info("  [%d] Requesting %s Q%d (months %s–%s) …",
+                            year, variable, q_idx, months[0], months[-1])
+                tmp = stage_dir / f"{variable}_Q{q_idx}.download"
+                client.retrieve(
+                    era5_cfg["product"],
+                    {
+                        "variable": [variable],
+                        "year": str(year),
+                        "month": months,
+                        "day": ALL_DAYS,
+                        "time": ALL_HOURS,
+                        "format": "netcdf",
+                        "area": era5_cfg["area"],
+                    },
+                    str(tmp),
+                )
+                _extract_if_zip(tmp, chunk_nc)
+                logger.info("  [%d] %s Q%d → %s (%.1f MB)",
+                            year, variable, q_idx, chunk_nc.name,
+                            chunk_nc.stat().st_size / 1024 ** 2)
+            chunk_files.append(chunk_nc)
+
+    # Merge: first concatenate quarters per variable, then merge variables
+    logger.info("Merging %d quarterly chunks → %s", len(chunk_files), out_file.name)
+    n_vars = len(FORCING_VARIABLES)
+    var_datasets = []
+    for v_idx, variable in enumerate(FORCING_VARIABLES):
+        q_files = chunk_files[v_idx * 4 : v_idx * 4 + 4]
+        q_ds = [xr.open_dataset(p) for p in q_files]
+        time_coord = "time" if "time" in q_ds[0].coords else "valid_time"
+        var_ds = xr.concat(q_ds, dim=time_coord)
+        for ds in q_ds:
+            ds.close()
+        var_datasets.append(var_ds)
+
+    merged = xr.merge(var_datasets)
+    merged.to_netcdf(out_file)
+    for ds in var_datasets:
+        ds.close()
+
+    shutil.rmtree(stage_dir, ignore_errors=True)
+    logger.info("ERA5-Land forcing %d → %s  (%.0f MB)",
+                year, out_file.name, out_file.stat().st_size / 1024 ** 2)
 
 
 # ---------------------------------------------------------------------------
