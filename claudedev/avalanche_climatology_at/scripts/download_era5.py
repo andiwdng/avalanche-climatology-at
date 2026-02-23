@@ -128,7 +128,7 @@ def download_era5(config: dict) -> None:
 
     # Initialise CDS client
     rc_path = os.path.expanduser(era5_cfg.get("cds_api_rc", "~/.cdsapirc"))
-    client = cdsapi.Client(url=None, key=None, rc_path=rc_path, quiet=True)
+    client = cdsapi.Client(quiet=True)
 
     # --- 1. Download static orography (once) ---
     _download_orography(client, era5_cfg, output_dir)

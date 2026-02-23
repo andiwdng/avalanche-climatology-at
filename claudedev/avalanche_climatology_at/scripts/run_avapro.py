@@ -25,7 +25,8 @@ Avalanche problem types classified
 2. wind_slab     — wind-deposited slab on hard faceted or weak layer
 3. persistent_wl — persistent weak layer (facets, depth hoar, surface hoar)
 4. wet_snow      — free water in snowpack triggering wet avalanches
-5. glide_snow    — snow gliding on smooth ground
+
+Note: glide_snow is excluded — AVAPRO cannot reliably classify it.
 
 AVAPRO command line
 -------------------
@@ -36,10 +37,15 @@ invocation assumed here is:
            --output <output_csv>
            [--config <config_file>]
 
-Output CSV columns expected
-----------------------------
-    date, new_snow, wind_slab, persistent_wl, wet_snow, glide_snow
-    (plus additional columns that are ignored)
+Output CSV / DataFrame columns (AVAPRO-native names)
+-----------------------------------------------------
+    date,
+    napex_sele_trigger, napex_sele_natural,   (new snow)
+    winex,                                     (wind slab)
+    papex_sele_trigger, papex_sele_natural,   (shallow persistent WL: F, Fk, SH)
+    dapex_sele_trigger, dapex_sele_natural,   (deep persistent WL: DH)
+    wapex_sele                                 (wet snow)
+    glide_snow excluded — not reliably classifiable by AVAPRO
 
 Values are boolean (0/1) or continuous probabilities [0, 1].  This
 wrapper normalises both to boolean by thresholding at 0.5.
@@ -56,7 +62,7 @@ When AVAPRO is unavailable, the following heuristics are applied:
 - wind_slab   : new snow AND |ΔHS| / ΔT differs between aspects (proxy: wind > 5 m/s AND new snow)
 - persistent_wl: presence of facets (grain type F, Fk, DH) at depth > 20 cm
 - wet_snow    : free water content (LWC) > 1 % in any layer (or surface > 0°C)
-- glide_snow  : wet snow AND low slope (< 15°) — not applicable for flat field
+- glide_snow  : excluded — not classifiable from flat-field profiles
 
 References
 ----------
@@ -89,14 +95,26 @@ _MIN_HS_FOR_CLASSIFICATION: float = 0.10
 # New snow threshold for new_snow problem [m per day]
 _NEW_SNOW_THRESHOLD: float = 0.03
 
-# Wind speed threshold for wind slab proxy [m/s]
-_WIND_SLAB_WIND_THRESHOLD: float = 5.0
-
-# Grain type codes for facets/depth hoar in SNOWPACK PRO (F=8, Fk=9, DH=10)
-_PWL_GRAIN_TYPES: set[int] = {8, 9, 10, 11}  # facets, kinetic, depth hoar, surface hoar
+# SNOWPACK PRO grain type: Swiss Code F1F2F3 (3-digit integer).
+# F1 (hundreds digit) encodes the primary grain form:
+#   1=PP, 2=DF, 3=RG, 4=FC, 5=DH, 6=SH, 7=MF, 8=IF
+# Shallow persistent WL: FC (4xx) and SH (6xx) → papex
+# Deep persistent WL:    DH (5xx)              → dapex
+_SHALLOW_PWL_F1: set[int] = {4, 6}   # faceted crystals, surface hoar
+_DEEP_PWL_F1: set[int]    = {5}      # depth hoar
 
 # Depth threshold below surface for PWL detection [m]
 _PWL_MIN_DEPTH: float = 0.20
+
+# Wet snow (AVAPRO decision tree — Mitterer et al. 2016)
+# First-cycle onset threshold for LWCindex [%]
+_WET_SNOW_THRESHOLD_1: float = 0.33
+# Subsequent-cycle threshold after the snowpack has dried
+_WET_SNOW_THRESHOLD_N: float = 1.0
+# Number of consecutive isothermal days to end a wet snow cycle
+_WET_SNOW_ISOTHERMAL_DAYS: int = 3
+# Isothermal: all layers within this many °C of 0
+_ISOTHERMAL_TOL: float = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -276,23 +294,28 @@ def _parse_avapro_csv(
 
     df_raw = pd.read_csv(csv_path, parse_dates=["date"], index_col="date")
 
-    problem_cols = {
-        "new_snow": col_map.get("new_snow", "new_snow"),
-        "wind_slab": col_map.get("wind_slab", "wind_slab"),
-        "persistent_wl": col_map.get("persistent_wl", "persistent_wl"),
-        "wet_snow": col_map.get("wet_snow", "wet_snow"),
-        "glide_snow": col_map.get("glide_snow", "glide_snow"),
+    # Map AVAPRO native column names → our standard names.
+    # Native names come from visually_process_aps.py / find_aps.py.
+    # col_map in config can override if a different AVAPRO version is used.
+    native_cols = {
+        "napex_sele_trigger": col_map.get("napex_sele_trigger", "napex_sele_trigger"),
+        "napex_sele_natural": col_map.get("napex_sele_natural", "napex_sele_natural"),
+        "winex":              col_map.get("winex",              "winex"),
+        "papex_sele_trigger": col_map.get("papex_sele_trigger", "papex_sele_trigger"),
+        "papex_sele_natural": col_map.get("papex_sele_natural", "papex_sele_natural"),
+        "dapex_sele_trigger": col_map.get("dapex_sele_trigger", "dapex_sele_trigger"),
+        "dapex_sele_natural": col_map.get("dapex_sele_natural", "dapex_sele_natural"),
+        "wapex_sele":         col_map.get("wapex_sele",         "wapex_sele"),
     }
 
-    result = pd.DataFrame(index=df_raw.index, dtype=bool)
-    for std_name, raw_name in problem_cols.items():
+    result = pd.DataFrame(index=df_raw.index)
+    for std_name, raw_name in native_cols.items():
         if raw_name in df_raw.columns:
-            result[std_name] = df_raw[raw_name].values > _AVAPRO_THRESHOLD
+            result[std_name] = (df_raw[raw_name].fillna(0) > _AVAPRO_THRESHOLD).astype(bool)
         else:
             logger.warning(
                 "Column '%s' not found in AVAPRO output %s; defaulting to False.",
-                raw_name,
-                csv_path.name,
+                raw_name, csv_path.name,
             )
             result[std_name] = False
 
@@ -333,50 +356,89 @@ def _heuristic_classify_pro(pro_path: Path) -> pd.DataFrame:
         logger.warning("No records parsed from %s.", pro_path.name)
         return _empty_problem_df()
 
+    # ── Wet snow state machine (Mitterer et al. 2016) ────────────────────────
+    # threshold cycles: first onset at 0.33 %, subsequent cycles at 1.0 %
+    wet_threshold   = _WET_SNOW_THRESHOLD_1
+    wet_active      = False   # currently flagging wet snow problem
+    iso_streak      = 0       # consecutive isothermal days
+
     rows = []
     hs_prev = 0.0
 
     for date, rec in sorted(records.items()):
-        hs = rec.get("hs", 0.0)            # m
-        ta = rec.get("ta", -5.0)           # °C
-        layers = rec.get("layers", [])
+        hs     = rec["hs_m"]
+        layers = rec["layers"]
 
-        # --- New snow ---
-        delta_hs = max(0.0, hs - hs_prev)
-        new_snow = (delta_hs >= _NEW_SNOW_THRESHOLD) and (hs >= _MIN_HS_FOR_CLASSIFICATION)
-
-        # --- Wind slab ---
-        vw = rec.get("vw", 0.0)
-        wind_slab = new_snow and (vw >= _WIND_SLAB_WIND_THRESHOLD)
-
-        # --- Persistent weak layer ---
-        pwl = False
-        cumulative_depth = 0.0
-        for layer in layers:
-            grain_type = int(layer.get("grain_type", 0))
-            thickness = float(layer.get("thickness", 0.0))
-            cumulative_depth += thickness
-            if grain_type in _PWL_GRAIN_TYPES and cumulative_depth >= _PWL_MIN_DEPTH:
-                pwl = True
-                break
-
-        # --- Wet snow ---
-        any_lwc = any(float(l.get("lwc", 0.0)) > 1.0 for l in layers)
-        wet_snow = (ta > -0.5) and any_lwc and (hs >= _MIN_HS_FOR_CLASSIFICATION)
-
-        # --- Glide snow (not applicable for flat-field) ---
-        glide_snow = False
-
-        rows.append(
-            {
+        # ── Snow height guard ──────────────────────────────────────────────
+        if hs < _MIN_HS_FOR_CLASSIFICATION:
+            hs_prev = hs
+            rows.append({
                 "date": date,
-                "new_snow": new_snow,
-                "wind_slab": wind_slab,
-                "persistent_wl": pwl,
-                "wet_snow": wet_snow,
-                "glide_snow": glide_snow,
-            }
+                "napex_sele_trigger": False, "napex_sele_natural": False,
+                "winex":              False,
+                "papex_sele_trigger": False, "papex_sele_natural": False,
+                "dapex_sele_trigger": False, "dapex_sele_natural": False,
+                "wapex_sele":         False,
+            })
+            continue
+
+        # ── LWCindex: thickness-weighted mean LWC [%] ─────────────────────
+        total_thick = sum(l["thickness_m"] for l in layers)
+        if total_thick > 0:
+            lwc_index = sum(l["lwc_pct"] * l["thickness_m"] for l in layers) / total_thick
+        else:
+            lwc_index = 0.0
+
+        # ── Isothermal state: all layers within _ISOTHERMAL_TOL of 0 °C ──
+        is_isothermal = bool(layers) and all(
+            abs(l["temp_c"]) <= _ISOTHERMAL_TOL for l in layers
         )
+        iso_streak = (iso_streak + 1) if is_isothermal else 0
+
+        # ── Wet snow state machine ─────────────────────────────────────────
+        if not wet_active:
+            if lwc_index > wet_threshold:
+                wet_active = True
+        else:
+            # Problem ends if LWCindex drops below threshold OR 3 consecutive
+            # isothermal days (snowpack fully wet and stable — AVAPRO criterion)
+            if lwc_index <= wet_threshold or iso_streak >= _WET_SNOW_ISOTHERMAL_DAYS:
+                wet_active    = False
+                wet_threshold = _WET_SNOW_THRESHOLD_N   # raise bar for next cycle
+
+        # ── New snow ───────────────────────────────────────────────────────
+        delta_hs = max(0.0, hs - hs_prev)
+        new_snow = delta_hs >= _NEW_SNOW_THRESHOLD
+
+        # ── Wind slab proxy (no wind in PRO; use new_snow as stand-in) ────
+        # Real AVAPRO uses wind transport index from meteo data.
+        wind_slab = new_snow
+
+        # ── Persistent weak layers (from grain type F1 digit) ─────────────
+        papex = False
+        dapex = False
+        depth_from_surface = 0.0
+        for layer in reversed(layers):   # top → bottom
+            depth_from_surface += layer["thickness_m"]
+            if depth_from_surface >= _PWL_MIN_DEPTH:
+                f1 = layer["grain_f1"]
+                if f1 in _SHALLOW_PWL_F1:
+                    papex = True
+                elif f1 in _DEEP_PWL_F1:
+                    dapex = True
+
+        # Natural release cannot be determined from flat-field heuristic
+        rows.append({
+            "date":               date,
+            "napex_sele_trigger": new_snow,
+            "napex_sele_natural": False,
+            "winex":              wind_slab,
+            "papex_sele_trigger": papex,
+            "papex_sele_natural": False,
+            "dapex_sele_trigger": dapex,
+            "dapex_sele_natural": False,
+            "wapex_sele":         wet_active,
+        })
         hs_prev = hs
 
     df = pd.DataFrame(rows).set_index("date")
@@ -389,30 +451,26 @@ def _parse_pro_file(pro_path: Path) -> dict:
     """
     Parse a SNOWPACK PRO file into a dictionary of daily profile records.
 
-    The PRO format uses numeric codes to identify record types.  Only
-    the records required for heuristic avalanche problem classification
-    are parsed.
+    PRO record codes used
+    ----------------------
+    0500 : Date and time  (DD.MM.YYYY HH:MM:SS)
+    0501 : Cumulative element heights from base [cm]  — last value = total HS
+    0503 : Layer temperature [°C]  (one value per element)
+    0506 : Liquid water content by volume [%]  (one per element)
+    0513 : Grain type, Swiss Code F1F2F3  (3-digit integer)
+           F1 hundreds digit: 1=PP, 2=DF, 3=RG, 4=FC, 5=DH, 6=SH, 7=MF, 8=IF
 
-    Key record codes
-    ----------------
-    0500 : Date and time
-    0501 : Snow height [cm]  (last column)
-    0502 : Air temperature [°C]
-    0506 : Wind speed (proxy) [m/s]  — not always present
-    0503 : Free water content per layer [%] (comma-separated list)
-    0508 : Grain type per layer (comma-separated integer list)
-    0510 : Layer thickness per layer [m] (comma-separated)
-
-    Parameters
-    ----------
-    pro_path : Path
-        Path to the SNOWPACK PRO file.
+    Layer thickness is derived from consecutive 0501 heights.
+    Elements are ordered bottom → top.
 
     Returns
     -------
     dict
-        ``records[datetime.date] = {hs, ta, vw, layers}``.
+        ``records[datetime.date] = {hs_m, layers}``.
+        Each layer: {thickness_m, temp_c, lwc_pct, grain_f1}
     """
+    import datetime
+
     records: dict = {}
     current_date = None
     current_rec: dict = {}
@@ -420,7 +478,7 @@ def _parse_pro_file(pro_path: Path) -> dict:
     with open(pro_path, encoding="utf-8", errors="replace") as fh:
         for raw_line in fh:
             line = raw_line.strip()
-            if not line or line.startswith("#"):
+            if not line or line.startswith("#") or line == "[DATA]":
                 continue
 
             parts = line.split(",")
@@ -429,82 +487,80 @@ def _parse_pro_file(pro_path: Path) -> dict:
 
             code = parts[0].strip()
 
+            # ── Date record ─────────────────────────────────────────────────
             if code == "0500":
-                # Date/time record: save previous record
                 if current_date is not None and current_rec:
                     records[current_date] = current_rec
-
-                # Parse date: format is DD.MM.YYYY HH:MM
                 try:
-                    import datetime
-                    date_str = parts[1].strip() + " " + parts[2].strip() if len(parts) > 2 else parts[1].strip()
+                    # Date+time may be in one field ("DD.MM.YYYY HH:MM:SS")
+                    # or split across two fields by a comma
+                    date_str = (parts[1].strip() + " " + parts[2].strip()
+                                if len(parts) > 2 else parts[1].strip())
                     dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M:%S")
                     current_date = dt.date()
-                    current_rec = {"layers": [], "ta": -5.0, "hs": 0.0, "vw": 0.0}
+                    current_rec = {"hs_m": 0.0, "layers": []}
                 except (ValueError, IndexError):
                     current_date = None
                     current_rec = {}
 
-            elif code == "0501" and current_date is not None:
-                # Snow height [cm] — last non-empty column
+            elif current_date is None:
+                continue
+
+            # ── Element heights → HS + layer thicknesses ─────────────────
+            elif code == "0501":
                 try:
-                    vals = [p for p in parts[1:] if p.strip() not in ("", "-999")]
-                    if vals:
-                        current_rec["hs"] = float(vals[-1]) / 100.0  # cm → m
+                    heights = [float(p) for p in parts[2:] if p.strip() not in ("", "-999")]
+                    # heights are cumulative from base [cm], bottom→top
+                    if heights:
+                        current_rec["hs_m"] = heights[-1] / 100.0
+                        thicknesses = []
+                        prev = 0.0
+                        for h in heights:
+                            thicknesses.append((h - prev) / 100.0)  # cm → m
+                            prev = h
+                        # initialise layer dicts
+                        current_rec["layers"] = [{"thickness_m": t, "temp_c": 0.0,
+                                                   "lwc_pct": 0.0, "grain_f1": 0}
+                                                  for t in thicknesses]
                 except (ValueError, IndexError):
                     pass
 
-            elif code == "0502" and current_date is not None:
-                # Surface air temperature [°C]
-                try:
-                    current_rec["ta"] = float(parts[1])
-                except (ValueError, IndexError):
-                    pass
-
-            elif code == "0506" and current_date is not None:
-                # Wind speed [m/s]
-                try:
-                    current_rec["vw"] = float(parts[1])
-                except (ValueError, IndexError):
-                    pass
-
-            elif code == "0508" and current_date is not None:
-                # Grain type per layer
-                grain_types = []
-                for val in parts[1:]:
+            # ── Layer temperature [°C] ────────────────────────────────────
+            elif code == "0503":
+                vals = []
+                for p in parts[2:]:
                     try:
-                        grain_types.append(int(float(val)))
+                        vals.append(float(p))
                     except ValueError:
                         pass
-                # Attach to existing layers or create placeholder layers
-                for idx, gt in enumerate(grain_types):
-                    while len(current_rec["layers"]) <= idx:
-                        current_rec["layers"].append({})
-                    current_rec["layers"][idx]["grain_type"] = gt
+                for idx, v in enumerate(vals):
+                    if idx < len(current_rec["layers"]):
+                        current_rec["layers"][idx]["temp_c"] = v
 
-            elif code == "0503" and current_date is not None:
-                # Liquid water content [%] per layer
-                for idx, val in enumerate(parts[1:]):
+            # ── LWC by volume [%] ─────────────────────────────────────────
+            elif code == "0506":
+                vals = []
+                for p in parts[2:]:
                     try:
-                        lwc = float(val)
+                        vals.append(float(p))
                     except ValueError:
-                        continue
-                    while len(current_rec["layers"]) <= idx:
-                        current_rec["layers"].append({})
-                    current_rec["layers"][idx]["lwc"] = lwc
+                        pass
+                for idx, v in enumerate(vals):
+                    if idx < len(current_rec["layers"]):
+                        current_rec["layers"][idx]["lwc_pct"] = max(0.0, v)
 
-            elif code == "0510" and current_date is not None:
-                # Layer thickness [m]
-                for idx, val in enumerate(parts[1:]):
+            # ── Grain type (Swiss Code F1F2F3) ────────────────────────────
+            elif code == "0513":
+                vals = []
+                for p in parts[2:]:
                     try:
-                        thick = float(val)
+                        vals.append(int(float(p)))
                     except ValueError:
-                        continue
-                    while len(current_rec["layers"]) <= idx:
-                        current_rec["layers"].append({})
-                    current_rec["layers"][idx]["thickness"] = thick
+                        pass
+                for idx, v in enumerate(vals):
+                    if idx < len(current_rec["layers"]):
+                        current_rec["layers"][idx]["grain_f1"] = v // 100  # hundreds digit
 
-    # Append last record
     if current_date is not None and current_rec:
         records[current_date] = current_rec
 
@@ -512,9 +568,15 @@ def _parse_pro_file(pro_path: Path) -> dict:
 
 
 def _empty_problem_df() -> pd.DataFrame:
-    """Return an empty problem DataFrame with the correct column schema."""
+    """Return an empty problem DataFrame with AVAPRO-native column schema."""
     return pd.DataFrame(
-        columns=["new_snow", "wind_slab", "persistent_wl", "wet_snow", "glide_snow"],
+        columns=[
+            "napex_sele_trigger", "napex_sele_natural",
+            "winex",
+            "papex_sele_trigger", "papex_sele_natural",
+            "dapex_sele_trigger", "dapex_sele_natural",
+            "wapex_sele",
+        ],
         dtype=bool,
     )
 

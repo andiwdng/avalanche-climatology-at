@@ -359,8 +359,8 @@ def main() -> int:
         help="Load existing seasonal_stats.csv and regenerate figures only"
     )
     parser.add_argument(
-        "--n-jobs", type=int, default=-1,
-        help="Parallel SNOWPACK workers (-1 = all CPUs)"
+        "--n-jobs", type=int, default=2,
+        help="Parallel SNOWPACK workers (-1 = all CPUs, use with care on low-RAM machines)"
     )
     parser.add_argument(
         "--log-level", default="INFO",

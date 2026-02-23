@@ -57,7 +57,7 @@ _SIMULATION_TIMEOUT: int = 7200  # 2 hours
 def run_snowpack_simulations(
     config: dict,
     ini_paths: dict[str, dict[int, Path]],
-    n_jobs: int = -1,
+    n_jobs: int = 2,
 ) -> dict[str, dict[int, bool]]:
     """
     Run all SNOWPACK simulations in parallel.
@@ -70,7 +70,7 @@ def run_snowpack_simulations(
         ``ini_paths[region][elev] = Path`` to INI file, as returned by
         :func:`scripts.snowpack_writer.write_all_snowpack_inputs`.
     n_jobs : int
-        Number of parallel workers.  −1 uses all CPUs.
+        Number of parallel workers.  −1 uses all CPUs (dangerous on low-RAM machines).
 
     Returns
     -------
