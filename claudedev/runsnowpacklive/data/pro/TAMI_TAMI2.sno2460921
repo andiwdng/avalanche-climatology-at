@@ -1,0 +1,25 @@
+SMET 1.1 ASCII
+[HEADER]
+station_id       = TAMI
+station_name     = Gesäuse Tamischbachturm
+latitude         = 47.617163
+longitude        = 14.717084
+altitude         = 1425.0
+nodata           = -999
+tz               = 0
+slope_angle      = 0
+slope_azi        = 0
+ProfileDate      = 2025-09-02T00:00:00
+HS_Last          = 0.000000
+nSoilLayerData   = 0
+nSnowLayerData   = 0
+SoilAlbedo       = 0.09
+BareSoil_z0      = 0.020
+CanopyHeight     = 0.00
+CanopyLeafAreaIndex = 0.000000
+CanopyDirectThroughfall = 1.00
+WindScalingFactor = 1.00
+ErosionLevel     = 0
+TimeCountDeltaHS = 0.000000
+fields           = timestamp Layer_Thick  T  Vol_Frac_I  Vol_Frac_W  Vol_Frac_V  Vol_Frac_S Rho_S Conduc_S HeatCapac_S  rg  rb  dd  sp  mk mass_hoar ne CDot metamo
+[DATA]
