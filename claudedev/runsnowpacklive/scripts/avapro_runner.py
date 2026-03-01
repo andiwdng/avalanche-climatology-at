@@ -35,6 +35,59 @@ except ImportError:
     logger.warning("snowpacktools not installed — AVAPRO classification unavailable.")
 
 
+def _patch_avapro() -> None:
+    """
+    Monkey-patch two bugs in the installed snowpacktools AVAPRO code:
+
+    1. fu_instab.fu_precstabindx — broadcasting error when timewindow is empty.
+       Occurs at season start before any snowpack exists (station mode, bare
+       ground in autumn).  Return NaN tuple to let the iteration continue.
+
+    2. post_process_aps.assign_aps — reads propthrshnap with int() but the
+       template ini has 0.32 (a float).  int('0.32') raises ValueError.
+       Patch configparser to coerce this one key to float-then-int gracefully.
+    """
+    try:
+        import numpy as np
+        import configparser as _cp
+        from snowpacktools.avapro import fu_instab, post_process_aps
+
+        # --- patch 1: empty timewindow in fu_precstabindx ---
+        _orig_precstab = fu_instab.fu_precstabindx
+
+        def _safe_fu_precstabindx(burialdate, tm, precrat, scmodstep, alp=38, plotit=0):
+            if not tm:  # empty timewindow → Ampl=[] → broadcasting error
+                return (np.nan,) * 10
+            return _orig_precstab(burialdate, tm, precrat, scmodstep, alp, plotit)
+
+        fu_instab.fu_precstabindx = _safe_fu_precstabindx
+
+        # --- patch 2: int() on float-valued threshold propthrshnap ---
+        # post_process_aps uses int(config.get(..., 'propthrshnap')) but
+        # the template ini has 0.32 — wrap ConfigParser.get to return the
+        # floor-int for that specific key so the call doesn't crash.
+        _orig_cp_get = _cp.ConfigParser.get
+
+        def _safe_cp_get(self, section, option, *args, **kwargs):
+            val = _orig_cp_get(self, section, option, *args, **kwargs)
+            # Convert float strings to int-compatible when the caller expects int
+            if option.lower() == "propthrshnap":
+                try:
+                    return str(int(float(val)))
+                except (TypeError, ValueError):
+                    pass
+            return val
+
+        _cp.ConfigParser.get = _safe_cp_get
+
+    except Exception as exc:
+        logger.warning("Could not apply AVAPRO patch: %s", exc)
+
+
+if _AVAPRO_AVAILABLE:
+    _patch_avapro()
+
+
 class AvaPRORunner:
     """Runs AVAPRO on a SNOWPACK PRO file and saves daily problem flags to CSV."""
 
@@ -91,28 +144,24 @@ class AvaPRORunner:
         ini_path = ini_dir / "avapro.ini"
 
         cfg = configparser.ConfigParser()
-        # Preserve key case (configparser lowercases by default)
-        cfg.optionxform = str
 
         cfg["AVAPRO"] = {
-            "SNP_DIR":              str(pro_path.parent.resolve()),
-            "SNP_FILE":             pro_path.name,
-            "OUTPUT_DIR":           str(self.out_dir.resolve()),
-            "OUTPUT_DIR_FIGS":      str(figs_dir.resolve()),
-            "rerun_find_WL":        "1",
-            "rerun_assign_avaprobs":"1",
+            "SNP_DIR":               str(pro_path.parent.resolve()),
+            "SNP_FILE":              pro_path.name,
+            "OUTPUT_DIR":            str(self.out_dir.resolve()),
+            "OUTPUT_DIR_FIGS":       str(figs_dir.resolve()),
+            "rerun_find_WL":         "1",
+            "rerun_assign_avaprobs": "1",
             "run_visualize_avaprobs":"0",   # skip figure generation by default
-            "DATE_OPERA":           "TODAY",
-            "SEASON_END":           season_end,   # used by avapro.py for date check
-            "initilization_type":   "station",
-            "drytime":              "6",
-            "wettime":              "15",
-            "RESOLUTION":           "1d",
-            "resolution":           "1d",
-            "debug":                "0",
-            "scmopt":               "snp",
-            "season_start":         season_start,
-            "season_end":           season_end,
+            "DATE_OPERA":            "TODAY",
+            "initilization_type":    "station",
+            "drytime":               "6",
+            "wettime":               "15",
+            "resolution":            "1d",
+            "debug":                 "0",
+            "scmopt":                "snp",
+            "season_start":          season_start,
+            "season_end":            season_end,
         }
         cfg["AVAPRO-THOLDS-WL"] = {
             "calcFEM":       "0",
