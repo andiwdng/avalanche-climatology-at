@@ -7,6 +7,63 @@ simulation, and AVAPRO avalanche problem classification.
 
 ---
 
+## Current Status (last updated 2026-03-01)
+
+### What is done
+
+| Step | Status | Notes |
+|------|--------|-------|
+| Pipeline scaffolding | Done | `main.py`, all scripts, `config.yaml`, `requirements.txt` |
+| ERA5-Land downloader | Done | Quarterly chunks per variable, ZIP extraction, `already on disk` resume logic |
+| ERA5 de-accumulation fix | Done | Carry-over correction for `total_precipitation` and `surface_solar_radiation_downwards`; units converted to mm/h and W/m² |
+| ERA5 orography | Done | Downloaded as ERA5 single-levels (not ERA5-Land, which has no orography variable) |
+| CDS API compatibility | Done | Works with new Copernicus CDS API v2 (ecmwf-datastores); ZIP extraction instead of direct NetCDF |
+| ERA5 years 1999–2001 | **Downloaded & merged** | `data/era5_raw/era5land_forcing_{year}.nc` exist for 1999, 2000, 2001 |
+| ERA5 year 2002 | **Partial** — stopped mid-download | See below |
+| ERA5 years 2003–2021 | Not started | Will run automatically once 2002 finishes |
+| SPARTACUS download | Not started | Script exists (`download_spartacus.py`) |
+| Interpolation & bias correction | Not started | Scripts exist |
+| SNOWPACK runs | Not started | Scripts exist |
+| AVAPRO / classification | Not started | Scripts exist |
+| Clustering & figures | Not started | Scripts exist |
+
+### Where we stopped — ERA5 download
+
+The ERA5 download ran from **2026-02-22** and completed years 1999–2001 plus part of 2002.
+On **2026-02-26** the machine lost DNS resolution to `cds.climate.copernicus.eu` for ~5 days.
+The CDS job for **2002 `total_precipitation Q3`** (job ID `c6cac0cb-3b43-4387-a277-77d27baca18e`)
+was submitted successfully but its results expired on the CDS server before the network recovered.
+The process crashed on **2026-03-01** with `404 results expired`.
+
+**State of `data/era5_raw/` on stop:**
+
+```
+era5land_orography.nc          ← done
+era5land_forcing_1999.nc       ← done (merged)
+era5land_forcing_2000.nc       ← done (merged)
+era5land_forcing_2001.nc       ← done (merged)
+_stage_2002/
+  2m_temperature_Q1–Q4.nc      ← done
+  2m_dewpoint_temperature_Q1–Q4.nc  ← done
+  total_precipitation_Q1.nc    ← done
+  total_precipitation_Q2.nc    ← done
+  total_precipitation_Q3.nc    ← MISSING (job expired)
+  ... remaining variables      ← not started
+```
+
+### To resume
+
+```bash
+cd avalanche_climatology_at/
+python scripts/download_era5.py
+```
+
+The script checks `already on disk` for every quarterly file before requesting it,
+so it will skip the 30+ files already downloaded and continue from 2002 Q3.
+Expected remaining download: years 2002–2021 (~19 years × ~7 variables × 4 quarters).
+
+---
+
 ## Scientific Background
 
 ### Motivation
