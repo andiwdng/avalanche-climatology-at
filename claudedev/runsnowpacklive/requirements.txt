@@ -1,0 +1,8 @@
+# snowpack_steiermark/requirements.txt
+requests>=2.31
+pyyaml>=6.0
+pandas>=2.0
+numpy>=1.24
+flask>=3.0
+matplotlib>=3.7
+gitpython>=3.1

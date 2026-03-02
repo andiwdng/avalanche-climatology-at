@@ -1,0 +1,75 @@
+# snowpack_steiermark/config.yaml
+
+stations:
+  - id: TAMI
+    name: "Gesäuse Tamischbachturm"
+    snow_station: TAMI2
+    wind_station: TAMI1
+    latitude: 47.617163
+    longitude: 14.717084
+    altitude: 1425
+    ilwr: false
+    tsg: false
+
+  - id: LOSE
+    name: "Altaussee Loser"
+    snow_station: LOSE2
+    wind_station: LOSE1
+    latitude: 47.658886
+    longitude: 13.784403
+    altitude: 1573
+    ilwr: true
+    tsg: false   # sensor broken: oscillates 200-310K; use CST 273.15 K instead
+
+  - id: VEIT
+    name: "Veitsch"
+    snow_station: VEIT2
+    wind_station: VEIT1
+    latitude: 47.638222
+    longitude: 15.420722
+    altitude: 1323
+    ilwr: true
+    tsg: false   # sensor broken: oscillates 200-310K; use CST 273.15 K instead
+
+  - id: PLAN
+    name: "Planneralm"
+    snow_station: PLAN2
+    wind_station: PLAN1
+    latitude: 47.40085
+    longitude: 14.193223
+    altitude: 1707
+    ilwr: false
+    tsg: false
+
+# backward-compat alias (used by git_sync, old code)
+station:
+  id: "TAMI"
+  name: "Gesäuse Tamischbachturm"
+  latitude: 47.617163
+  longitude: 14.717084
+  altitude: 1425
+
+snowpack:
+  binary: "/Applications/Snowpack/bin/snowpack"
+  timeout: 3600
+
+simulation:
+  season_start_month: 9
+  season_start_day: 1
+  restart_from_sno: true
+
+git:
+  repo_path: "../.."
+  branch: "main"
+  auto_push: true
+  commit_message_template: "SNOWPACK update {station} {date}"
+
+web:
+  host: "0.0.0.0"
+  port: 5001
+  debug: false
+
+paths:
+  data: "data"
+  logs: "logs"
+  state: "state"

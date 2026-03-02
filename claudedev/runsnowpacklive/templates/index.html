@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<!-- snowpack_steiermark/templates/index.html -->
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SNOWPACK Steiermark — {{ station_name }}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <!-- Navbar -->
+  <nav class="navbar navbar-dark bg-dark">
+    <div class="container-fluid">
+      <span class="navbar-brand mb-0 h1">🏔️ SNOWPACK Steiermark</span>
+      <div class="d-flex align-items-center gap-3">
+        <select id="station-select" class="form-select form-select-sm" style="width:auto;" onchange="onStationChange()">
+          {% for s in stations %}
+          <option value="{{ s.id }}">{{ s.name }} ({{ s.id }})</option>
+          {% endfor %}
+        </select>
+        <span class="navbar-text text-light" id="current-date"></span>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container-fluid mt-3">
+    <div class="row g-3">
+
+      <!-- Left column: Status -->
+      <div class="col-lg-6">
+
+        <!-- Simulation status -->
+        <div class="card mb-3">
+          <div class="card-header fw-bold">📡 Letzte Simulation</div>
+          <div class="card-body">
+            <span class="status-value" id="last-simulation">—</span>
+            <span class="badge ms-2" id="sim-badge">—</span>
+          </div>
+        </div>
+
+        <!-- Data download status -->
+        <div class="card mb-3">
+          <div class="card-header fw-bold">⬇️ Letzte Daten</div>
+          <div class="card-body">
+            <span class="status-value" id="last-download">—</span>
+            <span class="badge ms-2" id="dl-badge">—</span>
+          </div>
+        </div>
+
+        <!-- Snow cover -->
+        <div class="card mb-3">
+          <div class="card-header fw-bold">❄️ Aktuelle Schneedecke</div>
+          <div class="card-body row">
+            <div class="col-6 text-center">
+              <div class="small text-muted">Schneehöhe</div>
+              <div class="status-value" id="snow-height">—</div>
+              <div class="small text-muted">cm</div>
+            </div>
+            <div class="col-6 text-center">
+              <div class="small text-muted">Oberflächentemp.</div>
+              <div class="status-value" id="surface-temp">—</div>
+              <div class="small text-muted">°C</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Avalanche problems -->
+        <div class="card mb-3">
+          <div class="card-header fw-bold">⚠️ Lawinenprobleme heute</div>
+          <div class="card-body">
+            <span id="prob-new-snow"    class="problem-badge problem-inactive">❄️ Neuschnee</span>
+            <span id="prob-wind-slab"   class="problem-badge problem-inactive">🌬️ Triebschnee</span>
+            <span id="prob-pwl"         class="problem-badge problem-inactive">🏔️ Altschnee/PWL</span>
+            <span id="prob-wet-snow"    class="problem-badge problem-inactive">💧 Nassschnee</span>
+          </div>
+        </div>
+
+      </div><!-- /left col -->
+
+      <!-- Right column: Actions -->
+      <div class="col-lg-6">
+        <div class="card mb-3">
+          <div class="card-header fw-bold">🎮 Steuerung</div>
+          <div class="card-body d-grid gap-2">
+
+            <button id="btn-run" class="btn btn-primary btn-lg" onclick="startRun()">
+              🔄 Daten laden &amp; Simulation starten
+            </button>
+
+            <button class="btn btn-outline-secondary" onclick="openNivizModal()">
+              📊 niViz öffnen
+            </button>
+
+            <a href="/pro/download" class="btn btn-outline-secondary">
+              ⬇️ PRO-Datei herunterladen
+            </a>
+
+            <button id="btn-avapro" class="btn btn-outline-secondary" onclick="toggleAvapro()">
+              🔬 AVAPRO: <span id="avapro-label">…</span>
+            </button>
+
+            <button class="btn btn-outline-dark" onclick="gitPush()">
+              ☁️ Git Push
+            </button>
+
+          </div>
+        </div>
+
+        <!-- Spinner + log output -->
+        <div id="run-status-box" class="card mb-3 d-none">
+          <div class="card-header fw-bold">📋 Simulation Log</div>
+          <div class="card-body">
+            <div id="run-spinner" class="spinner d-none"></div>
+            <div id="run-result-badge" class="mb-2"></div>
+            <pre id="log-output" class="mb-0"></pre>
+          </div>
+        </div>
+
+        <!-- Git push result -->
+        <div id="git-result" class="alert d-none" role="alert"></div>
+
+      </div><!-- /right col -->
+    </div><!-- /row -->
+
+    <!-- Timeseries chart -->
+    <div class="card mt-2">
+      <div class="card-header fw-bold">📈 Schneehöhe Saisonverlauf</div>
+      <div class="card-body">
+        <canvas id="hs-chart" style="max-height:300px;"></canvas>
+      </div>
+    </div>
+
+  <!-- AVAPRO season timeline -->
+  <div class="card mt-2">
+    <div class="card-header fw-bold">🏔 Lawinenprobleme Saisonverlauf</div>
+    <div class="card-body p-2">
+      <canvas id="avapro-season-canvas"></canvas>
+      <div id="avapro-season-empty" class="text-muted small d-none">
+        Noch keine AVAPRO-Daten vorhanden.
+      </div>
+    </div>
+  </div>
+
+  <!-- SMET raw data section -->
+  <div class="card mt-3">
+    <div class="card-header fw-bold d-flex justify-content-between align-items-center">
+      <span>📊 SMET Rohdaten — Meteostation</span>
+      <button class="btn btn-sm btn-outline-primary" onclick="toggleSmetCharts()">
+        Daten anzeigen / verbergen
+      </button>
+    </div>
+    <div id="smet-charts-box" class="card-body d-none">
+      <div id="smet-loading" class="text-center text-muted py-3">
+        <div class="spinner-border spinner-border-sm me-2"></div>
+        Lade SMET-Daten…
+      </div>
+      <!-- HS full width -->
+      <div class="mb-3">
+        <div class="small fw-bold text-muted mb-1">Schneehöhe HS [cm]</div>
+        <canvas id="smet-hs" style="max-height:220px;"></canvas>
+      </div>
+      <!-- 2-col grid for remaining variables -->
+      <div class="row g-3">
+        <div class="col-md-6">
+          <div class="small fw-bold text-muted mb-1">Lufttemperatur TA [°C]</div>
+          <canvas id="smet-ta" style="max-height:180px;"></canvas>
+        </div>
+        <div class="col-md-6">
+          <div class="small fw-bold text-muted mb-1">Relative Feuchte RH [%]</div>
+          <canvas id="smet-rh" style="max-height:180px;"></canvas>
+        </div>
+        <div class="col-md-6">
+          <div class="small fw-bold text-muted mb-1">Windgeschwindigkeit VW [m/s]</div>
+          <canvas id="smet-vw" style="max-height:180px;"></canvas>
+        </div>
+        <div class="col-md-6">
+          <div class="small fw-bold text-muted mb-1">Einstrahlung ISWR [W/m²]</div>
+          <canvas id="smet-iswr" style="max-height:180px;"></canvas>
+        </div>
+        <div class="col-md-6">
+          <div class="small fw-bold text-muted mb-1">Niederschlag PSUM [mm]</div>
+          <canvas id="smet-psum" style="max-height:180px;"></canvas>
+        </div>
+        <div class="col-md-6">
+          <div class="small fw-bold text-muted mb-1">Niederschlagsphase PSUM_PH [0=Regen, 1=Schnee]</div>
+          <canvas id="smet-ph" style="max-height:180px;"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /container -->
+
+  <script>
+    // ----------------------------------------------------------------
+    // Station selector
+    // ----------------------------------------------------------------
+    function selectedStation() {
+      return document.getElementById("station-select").value;
+    }
+
+    function onStationChange() {
+      loadStatus();
+      loadChart();
+      loadAvaproSeason();
+      // Reset SMET chart cache so next open reloads for the new station
+      _smetLoaded = false;
+      const box = document.getElementById("smet-charts-box");
+      if (!box.classList.contains("d-none")) {
+        loadSmetCharts();
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // Helpers
+    // ----------------------------------------------------------------
+    function formatDate(isoStr) {
+      if (!isoStr) return "—";
+      try {
+        return new Date(isoStr).toLocaleString("de-AT");
+      } catch { return isoStr; }
+    }
+
+    function ageBadge(isoStr) {
+      if (!isoStr) return ["bg-secondary", "—"];
+      const d = new Date(isoStr);
+      const now = new Date();
+      const diffH = (now - d) / 3600000;
+      if (diffH < 26) return ["bg-success", "heute"];
+      if (diffH < 50) return ["bg-warning text-dark", "gestern"];
+      return ["bg-danger", "veraltet"];
+    }
+
+    function setProblem(id, active, color) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (active) {
+        el.className = "problem-badge problem-active";
+        el.style.backgroundColor = color;
+      } else {
+        el.className = "problem-badge problem-inactive";
+        el.style.backgroundColor = "";
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // Status polling
+    // ----------------------------------------------------------------
+    async function loadStatus() {
+      try {
+        const r = await fetch("/api/status?station=" + selectedStation());
+        if (!r.ok) return;
+        const s = await r.json();
+
+        document.getElementById("last-simulation").textContent =
+          s.last_simulation ? formatDate(s.last_simulation) : "—";
+        const [simCls, simLbl] = ageBadge(s.last_simulation);
+        const simBadge = document.getElementById("sim-badge");
+        simBadge.className = "badge " + simCls;
+        simBadge.textContent = simLbl;
+
+        document.getElementById("last-download").textContent =
+          s.last_download ? formatDate(s.last_download) : "—";
+        const [dlCls, dlLbl] = ageBadge(s.last_download);
+        const dlBadge = document.getElementById("dl-badge");
+        dlBadge.className = "badge " + dlCls;
+        dlBadge.textContent = dlLbl;
+
+        document.getElementById("snow-height").textContent =
+          s.snow_height_cm !== null ? s.snow_height_cm : "—";
+        document.getElementById("surface-temp").textContent =
+          s.surface_temp_c !== null ? s.surface_temp_c : "—";
+
+        const p = s.problems || {};
+        setProblem("prob-new-snow",  p.new_snow,              "#1a6fbb");
+        setProblem("prob-wind-slab", p.wind_slab,             "#f07d00");
+        setProblem("prob-pwl",       p.persistent_weak_layer, "#c0392b");
+        setProblem("prob-wet-snow",  p.wet_snow,              "#f1c40f");
+
+      } catch (e) {
+        console.warn("Status fetch failed:", e);
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // Run pipeline
+    // ----------------------------------------------------------------
+    let pollInterval = null;
+
+    async function startRun() {
+      const btn = document.getElementById("btn-run");
+      btn.disabled = true;
+
+      const box = document.getElementById("run-status-box");
+      box.classList.remove("d-none");
+      document.getElementById("run-spinner").classList.remove("d-none");
+      document.getElementById("log-output").textContent = "Starte Pipeline…\n";
+      document.getElementById("run-result-badge").innerHTML = "";
+
+      try {
+        await fetch("/run", { method: "POST" });
+      } catch (e) {
+        document.getElementById("log-output").textContent = "Fehler beim Starten: " + e;
+        btn.disabled = false;
+        return;
+      }
+
+      clearInterval(pollInterval);
+      pollInterval = setInterval(pollRunStatus, 2000);
+    }
+
+    async function pollRunStatus() {
+      try {
+        const r = await fetch("/run/status");
+        const data = await r.json();
+        document.getElementById("log-output").textContent = data.log || "";
+
+        if (data.status === "running") return;
+
+        clearInterval(pollInterval);
+        document.getElementById("run-spinner").classList.add("d-none");
+        document.getElementById("btn-run").disabled = false;
+
+        const badge = document.getElementById("run-result-badge");
+        if (data.status === "ok") {
+          badge.innerHTML = '<span class="badge bg-success">✓ Abgeschlossen</span>';
+        } else if (data.status === "error") {
+          badge.innerHTML = '<span class="badge bg-danger">✗ Fehler</span>';
+        } else {
+          badge.innerHTML = '<span class="badge bg-secondary">' + data.status + '</span>';
+        }
+        await loadStatus();
+        await loadChart();
+      } catch (e) {
+        console.warn("Poll failed:", e);
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // AVAPRO toggle
+    // ----------------------------------------------------------------
+    async function loadAvaproStatus() {
+      try {
+        const r = await fetch("/api/avapro-status");
+        const d = await r.json();
+        setAvaproLabel(d.avapro_enabled);
+      } catch(e) {}
+    }
+
+    function setAvaproLabel(enabled) {
+      const lbl = document.getElementById("avapro-label");
+      const btn = document.getElementById("btn-avapro");
+      if (enabled) {
+        lbl.textContent = "AN";
+        btn.classList.remove("btn-outline-danger");
+        btn.classList.add("btn-outline-secondary");
+      } else {
+        lbl.textContent = "AUS";
+        btn.classList.remove("btn-outline-secondary");
+        btn.classList.add("btn-outline-danger");
+      }
+    }
+
+    async function toggleAvapro() {
+      try {
+        const r = await fetch("/api/avapro-toggle", { method: "POST" });
+        const d = await r.json();
+        setAvaproLabel(d.avapro_enabled);
+      } catch(e) {
+        console.warn("AVAPRO toggle failed:", e);
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // Git push
+    // ----------------------------------------------------------------
+    async function gitPush() {
+      const el = document.getElementById("git-result");
+      el.className = "alert alert-info";
+      el.textContent = "Pushe zu GitHub…";
+      el.classList.remove("d-none");
+      try {
+        const r = await fetch("/git-push", { method: "POST" });
+        const data = await r.json();
+        if (data.success) {
+          el.className = "alert alert-success";
+          el.textContent = "✓ " + (data.output || "Erfolgreich gepusht.");
+        } else {
+          el.className = "alert alert-danger";
+          el.textContent = "✗ " + (data.output || "Push fehlgeschlagen.");
+        }
+      } catch (e) {
+        el.className = "alert alert-danger";
+        el.textContent = "Fehler: " + e;
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // Chart
+    // ----------------------------------------------------------------
+    let hsChart = null;
+
+    async function loadChart() {
+      try {
+        const r = await fetch("/api/timeseries?station=" + selectedStation());
+        const data = await r.json();
+        const ctx = document.getElementById("hs-chart").getContext("2d");
+        if (hsChart) hsChart.destroy();
+        hsChart = new Chart(ctx, {
+          type: "line",
+          data: {
+            labels: data.dates || [],
+            datasets: [{
+              label: "Schneehöhe (cm)",
+              data: data.hs_cm || [],
+              borderColor: "#1a6fbb",
+              backgroundColor: "rgba(26,111,187,0.15)",
+              fill: true,
+              tension: 0.3,
+              pointRadius: 0,
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: true } },
+            scales: {
+              x: { ticks: { maxTicksLimit: 12 } },
+              y: { title: { display: true, text: "HS [cm]" }, min: 0 }
+            }
+          }
+        });
+      } catch (e) {
+        console.warn("Chart load failed:", e);
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // AVAPRO season timeline (custom canvas heatmap)
+    // ----------------------------------------------------------------
+    const _AVAPRO_PROBLEMS = [
+      { key: "new_snow",                label: "Neuschnee",     color: "#5dade2" },
+      { key: "wind_slab",               label: "Triebschnee",   color: "#f39c12" },
+      { key: "persistent_weak_layer",   label: "Altschnee",     color: "#e74c3c" },
+      { key: "deep_slab",               label: "Tiefer Schnee", color: "#922b21" },
+      { key: "wet_snow",                label: "Nassschnee",    color: "#2471a3" },
+      { key: "glide_snow",              label: "Gleitschnee",   color: "#27ae60" },
+    ];
+    const _LABEL_W = 110;   // pixels reserved for row labels on the left
+    const _ROW_H   = 22;    // height of each problem row in pixels
+    const _HDR_H   = 20;    // height of the month-label header row
+
+    async function loadAvaproSeason() {
+      const canvas = document.getElementById("avapro-season-canvas");
+      const empty  = document.getElementById("avapro-season-empty");
+      try {
+        const r = await fetch("/api/avapro-season?station=" + selectedStation());
+        const d = await r.json();
+
+        if (!d.dates || d.dates.length === 0) {
+          canvas.style.display = "none";
+          empty.classList.remove("d-none");
+          return;
+        }
+        empty.classList.add("d-none");
+        canvas.style.display = "block";
+
+        const nDays = d.dates.length;
+        // Make canvas fill the card width
+        const totalW = canvas.parentElement.clientWidth - 16;
+        const cellW  = Math.max(2, Math.floor((totalW - _LABEL_W) / nDays));
+        const drawW  = _LABEL_W + nDays * cellW;
+        const drawH  = _HDR_H + _AVAPRO_PROBLEMS.length * _ROW_H + 4;
+
+        canvas.width  = drawW;
+        canvas.height = drawH;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, drawW, drawH);
+
+        // --- month labels ---
+        ctx.font      = "11px system-ui, sans-serif";
+        ctx.fillStyle = "#555";
+        ctx.textAlign = "left";
+        const MONTHS_DE = ["Jan","Feb","Mär","Apr","Mai","Jun",
+                           "Jul","Aug","Sep","Okt","Nov","Dez"];
+        let lastMonth = null;
+        d.dates.forEach((dateStr, i) => {
+          const m = parseInt(dateStr.slice(5, 7), 10) - 1;
+          if (m !== lastMonth) {
+            const x = _LABEL_W + i * cellW;
+            ctx.fillText(MONTHS_DE[m], x + 2, _HDR_H - 4);
+            // tick line
+            ctx.strokeStyle = "#ccc";
+            ctx.beginPath();
+            ctx.moveTo(x, _HDR_H);
+            ctx.lineTo(x, drawH);
+            ctx.stroke();
+            lastMonth = m;
+          }
+        });
+
+        // --- problem rows ---
+        _AVAPRO_PROBLEMS.forEach((prob, rowIdx) => {
+          const y = _HDR_H + rowIdx * _ROW_H;
+
+          // row label
+          ctx.fillStyle = "#333";
+          ctx.font      = "11px system-ui, sans-serif";
+          ctx.textAlign = "right";
+          ctx.fillText(prob.label, _LABEL_W - 6, y + _ROW_H / 2 + 4);
+
+          // day cells
+          d.dates.forEach((_, i) => {
+            const active = d[prob.key][i];
+            ctx.fillStyle = active ? prob.color : "#ececec";
+            ctx.fillRect(_LABEL_W + i * cellW, y + 1, cellW - 1, _ROW_H - 2);
+          });
+        });
+
+        // border around the data area
+        ctx.strokeStyle = "#ccc";
+        ctx.strokeRect(_LABEL_W, _HDR_H, nDays * cellW, _AVAPRO_PROBLEMS.length * _ROW_H);
+
+      } catch (e) {
+        console.warn("avapro-season load failed:", e);
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // Init
+    // ----------------------------------------------------------------
+    document.getElementById("current-date").textContent =
+      new Date().toLocaleDateString("de-AT", {
+        weekday: "long", year: "numeric", month: "long", day: "numeric"
+      });
+
+    loadStatus();
+    loadChart();
+    loadAvaproSeason();
+    loadAvaproStatus();
+    setInterval(loadStatus, 60000);
+
+    // ----------------------------------------------------------------
+    // SMET raw data charts
+    // ----------------------------------------------------------------
+    const _smetCharts = {};
+    let _smetLoaded = false;
+
+    function _makeChart(id, label, color, data, labels, yLabel, fill) {
+      const ctx = document.getElementById(id);
+      if (!ctx) return;
+      if (_smetCharts[id]) _smetCharts[id].destroy();
+      _smetCharts[id] = new Chart(ctx.getContext("2d"), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            label,
+            data,
+            borderColor: color,
+            backgroundColor: fill ? color.replace(")", ",0.12)").replace("rgb", "rgba") : "transparent",
+            fill: !!fill,
+            tension: 0.2,
+            pointRadius: 0,
+            borderWidth: 1.5,
+          }]
+        },
+        options: {
+          responsive: true,
+          animation: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+            y: { title: { display: true, text: yLabel, font: { size: 10 } } }
+          }
+        }
+      });
+    }
+
+    async function loadSmetCharts() {
+      document.getElementById("smet-loading").classList.remove("d-none");
+      try {
+        const r = await fetch("/api/smet-data?station=" + selectedStation());
+        const d = await r.json();
+        const labels = (d.dates || []).map(ts => ts.replace("T", " ").replace("Z", "").slice(0, 16));
+
+        _makeChart("smet-hs",   "HS [cm]",          "rgb(26,111,187)",  d.hs_cm,   labels, "cm",   true);
+        _makeChart("smet-ta",   "TA [°C]",          "rgb(231,76,60)",   d.ta_c,    labels, "°C",   false);
+        _makeChart("smet-rh",   "RH [%]",           "rgb(39,174,96)",   d.rh_pct,  labels, "%",    false);
+        _makeChart("smet-vw",   "VW [m/s]",         "rgb(243,156,18)",  d.vw_ms,   labels, "m/s",  false);
+        _makeChart("smet-iswr", "ISWR [W/m²]",      "rgb(241,196,15)",  d.iswr_wm2,labels, "W/m²", true);
+        _makeChart("smet-psum", "PSUM [mm]",         "rgb(155,89,182)",  d.psum_mm, labels, "mm",   true);
+        _makeChart("smet-ph",   "Phase (1=Schnee)",  "rgb(52,152,219)",  d.psum_ph, labels, "—",    false);
+
+        _smetLoaded = true;
+      } catch(e) {
+        console.warn("SMET chart load failed:", e);
+      }
+      document.getElementById("smet-loading").classList.add("d-none");
+    }
+
+    async function toggleSmetCharts() {
+      const box = document.getElementById("smet-charts-box");
+      box.classList.toggle("d-none");
+      if (!box.classList.contains("d-none") && !_smetLoaded) {
+        await loadSmetCharts();
+      }
+    }
+  </script>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+  <!-- niViz PRO file selector modal -->
+  <div class="modal fade" id="nivizModal" tabindex="-1" aria-labelledby="nivizModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="nivizModalLabel">📊 PRO-Datei für niViz auswählen</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-info py-2 small mb-3">
+            Datei auswählen → automatischer Download + niViz öffnet sich in neuem Tab.<br>
+            Im niViz-Fenster: <strong>File → Open</strong> → heruntergeladene <code>.pro</code> Datei wählen.
+          </div>
+          <div id="pro-file-list">
+            <div class="text-center text-muted py-3">
+              <div class="spinner-border spinner-border-sm me-2"></div>
+              Lade PRO-Dateien…
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <a href="https://run.niviz.org" target="_blank" class="btn btn-success">
+            🌐 niViz direkt öffnen
+          </a>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Schließen</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let nivizModalInstance = null;
+
+    async function openNivizModal() {
+      const modal = document.getElementById("nivizModal");
+      nivizModalInstance = bootstrap.Modal.getOrCreateInstance(modal);
+      nivizModalInstance.show();
+      await loadProFiles();
+    }
+
+    async function loadProFiles() {
+      const container = document.getElementById("pro-file-list");
+      try {
+        const r = await fetch("/api/pro-files");
+        const files = await r.json();
+
+        if (!files.length) {
+          container.innerHTML = '<p class="text-muted text-center py-3">Keine PRO-Dateien vorhanden.<br>Bitte zuerst eine Simulation starten.</p>';
+          return;
+        }
+
+        let html = '<div class="list-group">';
+        for (const f of files) {
+          const dt = new Date(f.modified).toLocaleString("de-AT");
+          html += `
+            <button class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
+                    onclick="selectProFile('${f.name}')">
+              <span>
+                <span class="fw-bold">📄 ${f.name}</span>
+                <span class="text-muted ms-3 small">${dt}</span>
+              </span>
+              <span class="badge bg-secondary">${f.size_kb} KB</span>
+            </button>`;
+        }
+        html += '</div>';
+        container.innerHTML = html;
+      } catch (e) {
+        container.innerHTML = '<p class="text-danger text-center py-3">Fehler beim Laden der PRO-Dateien.</p>';
+      }
+    }
+
+    function selectProFile(filename) {
+      // Close modal first
+      if (nivizModalInstance) nivizModalInstance.hide();
+
+      // Open our niViz page — it fetches the file and provides a drag handle
+      window.open(`/niviz?file=${encodeURIComponent(filename)}`, "_blank");
+    }
+  </script>
+</body>
+</html>

@@ -1,9 +1,9 @@
 # snowpack_steiermark/scripts/ini_writer.py
 """
-Generate the SNOWPACK INI file for the Tamsichbachturm simulation.
+Generate the SNOWPACK INI file for a given station.
 
-Uses the station-specific validated configuration as a template,
-substituting only the file paths and simulation period.
+Uses the station-validated configuration as a template, substituting file paths,
+simulation period, and per-station flags (MEAS_INCOMING_LONGWAVE, TSG generator).
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 def write_ini(
     config: dict,
+    station: dict,
     smet_path: Path,
     sno_path: Path,
     pro_dir: Path,
@@ -23,18 +24,18 @@ def write_ini(
     end_date: datetime,
 ) -> Path:
     """
-    Write the SNOWPACK INI file for Tamsichbachturm.
-
-    Uses the station-validated INI template with absolute paths substituted.
+    Write the SNOWPACK INI file for the given station.
 
     Parameters
     ----------
     config : dict
         Parsed config.yaml content.
+    station : dict
+        Station entry from config["stations"] list.
     smet_path : Path
-        Path to the SMET forcing file (TAMI2.smet).
+        Path to the SMET forcing file.
     sno_path : Path
-        Path to the initial SNO profile (TAMI2.sno).
+        Path to the initial SNO profile.
     pro_dir : Path
         Directory where SNOWPACK writes PRO / TS output.
     start_date : datetime
@@ -49,15 +50,40 @@ def write_ini(
     """
     ini_dir = Path(config["paths"]["data"]) / "ini"
     ini_dir.mkdir(parents=True, exist_ok=True)
-    ini_path = ini_dir / "tamsichbachturm.ini"
+    ini_path = ini_dir / f"{station['id'].lower()}.ini"
 
     smet_dir = smet_path.resolve().parent
     sno_dir = sno_path.resolve().parent
     pro_dir_abs = pro_dir.resolve()
     pro_dir_abs.mkdir(parents=True, exist_ok=True)
 
-    smet_name = smet_path.stem  # e.g. "TAMI2" (without .smet)
-    sno_name = sno_path.stem    # e.g. "TAMI2" (without .sno)
+    smet_name = smet_path.stem  # e.g. "TAMI2"
+    sno_name = sno_path.stem    # e.g. "TAMI2"
+
+    # Per-station flags
+    meas_ilwr = "TRUE" if station.get("ilwr") else "FALSE"
+
+    # TSG generator: only add when station does NOT have measured TSG
+    tsg_generator_lines = ""
+    if not station.get("tsg"):
+        tsg_generator_lines = """\
+TSG::create         =    CST
+TSG::CST::VALUE     =    273.15
+"""
+
+    # Extra filters for ILWR and TSG when station has measured ILWR
+    ilwr_tsg_filter_lines = ""
+    if station.get("ilwr"):
+        ilwr_tsg_filter_lines = """\
+ILWR::filter1      =    min_max
+ILWR::arg1::SOFT   =    TRUE
+ILWR::arg1::MIN    =    50
+ILWR::arg1::MAX    =    600
+TSG::filter1       =    min_max
+TSG::arg1::SOFT    =    TRUE
+TSG::arg1::MIN     =    200
+TSG::arg1::MAX     =    310
+"""
 
     content = f"""\
 [GENERAL]
@@ -75,16 +101,14 @@ ISWR_IS_NET =    FALSE
 SNOWPATH    =    {sno_dir}
 SNOW        =    SMET
 SNOWFILE1   =    {sno_name}.sno
-TSG::create         =    CST
-TSG::CST::VALUE     =    273.15
-
+{tsg_generator_lines}
 [OUTPUT]
 COORDSYS             =    UTM
 COORDPARAM           =    33T
 TIME_ZONE            =    0
 METEOPATH            =    {pro_dir_abs}
 WRITE_PROCESSED_METEO =   TRUE
-EXPERIMENT           =    TAMI2
+EXPERIMENT           =    {station['id']}
 SNOW                 =    SMET
 SNOWPATH             =    {pro_dir_abs}
 BACKUP_DAYS_BETWEEN  =    1
@@ -139,7 +163,7 @@ WIND_SCALING_FACTOR            =    1
 NUMBER_SLOPES                  =    1
 SNOW_REDISTRIBUTION            =    FALSE
 PREVAILING_WIND_DIR            =    0
-MEAS_INCOMING_LONGWAVE         =    FALSE
+MEAS_INCOMING_LONGWAVE         =    {meas_ilwr}
 PERP_TO_SLOPE                  =    FALSE
 ALLOW_ADAPTIVE_TIMESTEPPING    =    TRUE
 THRESH_RAIN                    =    1.2
@@ -215,7 +239,7 @@ HS::arg3::SOFT     =    TRUE
 HS::arg3::CENTERING     =    left
 HS::arg3::MIN_PTS  =    10
 HS::arg3::MIN_SPAN =    21600
-
+{ilwr_tsg_filter_lines}
 [INTERPOLATIONS1D]
 ENABLE_RESAMPLING    =    TRUE
 WINDOW_SIZE          =    864000
@@ -234,6 +258,9 @@ DW::nearest::extrapolate       =    true
 ISWR::resample                 =    linear
 ISWR::linear::window_size      =    864000
 ISWR::linear::extrapolate      =    true
+ILWR::resample                 =    linear
+ILWR::linear::window_size      =    864000
+ILWR::linear::extrapolate      =    true
 PSUM::resample                 =    accumulate
 PSUM::accumulate::PERIOD       =    900
 HS::resample                   =    nearest

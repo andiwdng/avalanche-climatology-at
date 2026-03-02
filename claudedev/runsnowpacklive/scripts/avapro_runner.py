@@ -91,12 +91,13 @@ if _AVAPRO_AVAILABLE:
 class AvaPRORunner:
     """Runs AVAPRO on a SNOWPACK PRO file and saves daily problem flags to CSV."""
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, station: dict) -> None:
         self.config = config
+        self._station = station
         out_dir = Path(config["paths"]["data"]) / "avapro_output"
         out_dir.mkdir(parents=True, exist_ok=True)
         self.out_dir = out_dir
-        self.csv_path = out_dir / "tamsichbachturm_problems.csv"
+        self.csv_path = out_dir / f"{station['id'].lower()}_problems.csv"
 
     # ------------------------------------------------------------------
     # Season bounds
@@ -123,7 +124,7 @@ class AvaPRORunner:
         Write an AVAPRO INI configuration file.
 
         AVAPRO requires PRO and SMET in the same directory; the file stem
-        must match (e.g. TAMI2.pro + TAMI2.smet in data/pro/).
+        must match (e.g. TAMI_TAMI2.pro + TAMI_TAMI2.smet in data/pro/).
 
         Parameters
         ----------
@@ -141,7 +142,8 @@ class AvaPRORunner:
 
         ini_dir = Path(self.config["paths"]["data"]) / "ini"
         ini_dir.mkdir(parents=True, exist_ok=True)
-        ini_path = ini_dir / "avapro.ini"
+        station_id = self._station["id"].lower()
+        ini_path = ini_dir / f"avapro_{station_id}.ini"
 
         cfg = configparser.ConfigParser()
 
@@ -331,7 +333,9 @@ class AvaPRORunner:
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
-def run_avapro(config: dict, pro_path: Path, smet_path: Path) -> Optional[pd.DataFrame]:
+def run_avapro(
+    config: dict, station: dict, pro_path: Path, smet_path: Path
+) -> Optional[pd.DataFrame]:
     """
     Run AVAPRO and save results.
 
@@ -339,6 +343,8 @@ def run_avapro(config: dict, pro_path: Path, smet_path: Path) -> Optional[pd.Dat
     ----------
     config : dict
         Parsed config.yaml.
+    station : dict
+        Station entry from config["stations"] list.
     pro_path : Path
         Path to the SNOWPACK PRO file.
     smet_path : Path
@@ -348,21 +354,23 @@ def run_avapro(config: dict, pro_path: Path, smet_path: Path) -> Optional[pd.Dat
     -------
     pd.DataFrame or None
     """
-    runner = AvaPRORunner(config)
+    runner = AvaPRORunner(config, station)
     df = runner.run(pro_path, smet_path)
     if df is not None and not df.empty:
         runner.save(df)
     return df
 
 
-def get_today_problems(config: dict) -> dict:
+def get_today_problems(config: dict, station: dict) -> dict:
     """
-    Read the most recent AVAPRO classification row from CSV.
+    Read the most recent AVAPRO classification row from CSV for a station.
 
     Parameters
     ----------
     config : dict
         Parsed config.yaml.
+    station : dict
+        Station entry from config["stations"] list.
 
     Returns
     -------
@@ -370,7 +378,9 @@ def get_today_problems(config: dict) -> dict:
         Problem flags for the latest classified day, all False if no data.
     """
     csv_path = (
-        Path(config["paths"]["data"]) / "avapro_output" / "tamsichbachturm_problems.csv"
+        Path(config["paths"]["data"])
+        / "avapro_output"
+        / f"{station['id'].lower()}_problems.csv"
     )
     default = {
         "new_snow": False,

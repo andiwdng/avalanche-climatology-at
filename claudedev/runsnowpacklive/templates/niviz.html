@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<!-- snowpack_steiermark/templates/niviz.html -->
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>niViz{% if pro_filename %} — {{ pro_filename }}{% endif %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <style>
+    body { margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    #topbar { flex: 0 0 auto; }
+    #iframe-wrap { flex: 1 1 auto; position: relative; }
+    #niviz-frame { width: 100%; height: 100%; border: none; display: block; }
+
+    /* Drag handle pill */
+    #drag-handle {
+      display: none;
+      position: absolute;
+      top: 12px; left: 50%; transform: translateX(-50%);
+      z-index: 20;
+      cursor: grab;
+      user-select: none;
+      background: #0d6efd;
+      color: #fff;
+      border-radius: 999px;
+      padding: 8px 20px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+      white-space: nowrap;
+      animation: pulse 1.8s infinite;
+    }
+    #drag-handle.ready { display: inline-block; }
+    #drag-handle:active { cursor: grabbing; }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 4px 16px rgba(13,110,253,0.4); }
+      50%      { box-shadow: 0 4px 28px rgba(13,110,253,0.8); }
+    }
+
+    /* Drop-zone highlight overlay (shown while dragging over iframe) */
+    #drop-overlay {
+      display: none;
+      position: absolute; inset: 0;
+      background: rgba(13,110,253,0.08);
+      border: 3px dashed #0d6efd;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #drag-handle.dragging ~ #drop-overlay { display: block; }
+
+    #status-bar {
+      font-size: 0.8rem;
+      padding: 4px 12px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #dee2e6;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top bar -->
+  <div id="topbar" class="navbar navbar-dark bg-dark px-3 py-1">
+    <a class="navbar-brand small py-0" href="/">⬅ Dashboard</a>
+    <span class="navbar-text text-light small" id="title-text">
+      📊 niViz{% if pro_filename %} — {{ pro_filename }}{% endif %}
+    </span>
+    {% if pro_filename %}
+    <a href="/pro/download/{{ pro_filename }}" class="btn btn-sm btn-outline-light ms-2" download>
+      ⬇ Download
+    </a>
+    {% endif %}
+  </div>
+
+  <!-- Status / instruction bar -->
+  <div id="status-bar" class="text-muted">
+    {% if pro_filename %}
+      <span id="status-msg">⏳ Lade <strong>{{ pro_filename }}</strong>…</span>
+    {% else %}
+      niViz — wähle eine PRO-Datei im Dashboard.
+    {% endif %}
+  </div>
+
+  <!-- iframe + drag handle -->
+  <div id="iframe-wrap">
+
+    <!-- Drag handle — appears once file is ready -->
+    <div id="drag-handle" draggable="true" title="Datei in niViz-Fenster ziehen">
+      📄 {{ pro_filename }} &nbsp;→ in niViz ziehen
+    </div>
+
+    <!-- Drop-zone visual overlay -->
+    <div id="drop-overlay"></div>
+
+    <iframe
+      id="niviz-frame"
+      src="https://run.niviz.org"
+      allow="fullscreen"
+      title="niViz">
+    </iframe>
+
+  </div>
+
+  <script>
+  // ----------------------------------------------------------------
+  // Only run file-loading logic when a filename was passed
+  // ----------------------------------------------------------------
+  const PRO_FILENAME = {{ pro_filename | tojson }};
+
+  if (PRO_FILENAME) {
+    const handle   = document.getElementById("drag-handle");
+    const statusEl = document.getElementById("status-msg");
+
+    let fileObject = null;  // File constructed from fetch
+
+    // 1. Fetch the PRO file from our server
+    fetch(`/pro/download/${encodeURIComponent(PRO_FILENAME)}`)
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      })
+      .then(blob => {
+        fileObject = new File([blob], PRO_FILENAME, { type: "text/plain" });
+
+        // 2. Make drag handle visible and active
+        handle.classList.add("ready");
+        statusEl.innerHTML =
+          `✅ <strong>${PRO_FILENAME}</strong> bereit — `  +
+          `in den niViz-Viewer unten ziehen`;
+
+        // 3. Attach drag events so the File rides along in DataTransfer
+        handle.addEventListener("dragstart", e => {
+          handle.classList.add("dragging");
+          e.dataTransfer.effectAllowed = "copy";
+          e.dataTransfer.items.add(fileObject);
+        });
+        handle.addEventListener("dragend", () => {
+          handle.classList.remove("dragging");
+        });
+      })
+      .catch(err => {
+        statusEl.innerHTML =
+          `❌ Fehler beim Laden: ${err.message} — `  +
+          `<a href="/pro/download/${encodeURIComponent(PRO_FILENAME)}" download>Manuell herunterladen</a>`;
+      });
+  }
+  </script>
+
+</body>
+</html>

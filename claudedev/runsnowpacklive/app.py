@@ -3,6 +3,9 @@
 Flask web application for the SNOWPACK Steiermark dashboard.
 Provides a browser GUI for controlling the pipeline, displaying status,
 downloading PRO files, and triggering Git pushes.
+
+All API endpoints accept an optional ?station=TAMI query parameter.
+Default station is TAMI for backward compatibility.
 """
 from __future__ import annotations
 
@@ -39,23 +42,43 @@ _config_path = Path(__file__).parent / "config.yaml"
 with open(_config_path) as _fh:
     config = yaml.safe_load(_fh)
 
+_stations_list: list[dict] = config.get("stations", [])
+_stations_by_id: dict[str, dict] = {s["id"].upper(): s for s in _stations_list}
+
 # Global run state (threadsafe enough for single-user dashboard)
 run_status: str = "idle"   # "idle" | "running" | "ok" | "error"
 run_log: str = ""
 run_lock = threading.Lock()
 
+# AVAPRO toggle — persists for the lifetime of the server process
+avapro_enabled: bool = True
+
 
 # ---------------------------------------------------------------------------
-# Helper: find PRO file
+# Helpers
 # ---------------------------------------------------------------------------
-def _find_pro_file() -> Path | None:
+
+def _get_station(station_id: str | None = None) -> dict:
+    """Return station dict by ID, falling back to TAMI."""
+    if station_id:
+        s = _stations_by_id.get(station_id.upper())
+        if s:
+            return s
+    return _stations_by_id.get("TAMI", _stations_list[0])
+
+
+def _find_pro_file(station: dict) -> Path | None:
     pro_dir = Path(config["paths"]["data"]) / "pro"
-    candidates = sorted(pro_dir.glob("*.pro"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # PRO files are named {snow_station}_{EXPERIMENT}.pro = {snow_station}_{station_id}.pro
+    candidates = sorted(
+        pro_dir.glob(f"{station['snow_station']}_*.pro"),
+        key=lambda p: p.stat().st_mtime, reverse=True
+    )
     return candidates[0] if candidates else None
 
 
-def _find_smet_file() -> Path:
-    return Path(config["paths"]["data"]) / "smet" / "TAMI2.smet"
+def _find_smet_file(station: dict) -> Path:
+    return Path(config["paths"]["data"]) / "smet" / f"{station['snow_station']}.smet"
 
 
 def _get_season_start() -> datetime:
@@ -68,8 +91,11 @@ def _get_season_start() -> datetime:
     return datetime(now.year - 1, sm, sd, 0, 0, tzinfo=timezone.utc)
 
 
-def _read_state() -> dict:
-    state_path = Path(config["paths"]["state"]) / "last_download.json"
+def _read_state(station: dict) -> dict:
+    state_path = (
+        Path(config["paths"]["state"])
+        / f"{station['id'].lower()}_download.json"
+    )
     if not state_path.exists():
         return {}
     try:
@@ -85,13 +111,18 @@ def _read_state() -> dict:
 
 @app.route("/")
 def index():
-    return render_template("index.html", station_name=config["station"]["name"])
+    return render_template(
+        "index.html",
+        station_name=config["station"]["name"],
+        stations=_stations_list,
+    )
 
 
 @app.route("/api/status")
 def api_status():
-    state = _read_state()
-    pro_path = _find_pro_file()
+    station = _get_station(request.args.get("station"))
+    state = _read_state(station)
+    pro_path = _find_pro_file(station)
 
     snow_height_cm = None
     surface_temp_c = None
@@ -106,11 +137,12 @@ def api_status():
         except Exception as exc:
             logger.warning("Could not parse PRO for status: %s", exc)
 
-    problems = get_today_problems(config)
-    runner = SnowpackRunner(config)
+    problems = get_today_problems(config, station)
+    runner = SnowpackRunner(config, station)
 
     return jsonify(
         {
+            "station": station["id"],
             "last_download": state.get("last_download"),
             "last_simulation": state.get("last_simulation_end"),
             "snow_height_cm": snow_height_cm,
@@ -125,7 +157,8 @@ def api_status():
 @app.route("/api/smet-data")
 def api_smet_data():
     """Return parsed SMET forcing data for GUI visualization."""
-    smet_path = _find_smet_file()
+    station = _get_station(request.args.get("station"))
+    smet_path = _find_smet_file(station)
     empty = {"dates": [], "ta_c": [], "rh_pct": [], "vw_ms": [],
              "dw_deg": [], "iswr_wm2": [], "psum_mm": [], "hs_cm": []}
     if not smet_path.exists():
@@ -180,7 +213,8 @@ def api_smet_data():
 
 @app.route("/api/timeseries")
 def api_timeseries():
-    pro_path = _find_pro_file()
+    station = _get_station(request.args.get("station"))
+    pro_path = _find_pro_file(station)
     if not pro_path or not pro_path.exists():
         return jsonify({"dates": [], "hs_cm": [], "tss_c": []})
     try:
@@ -213,74 +247,67 @@ def run_pipeline():
     return jsonify({"status": "started"})
 
 
-def _run_pipeline_thread() -> None:
-    """Execute the full pipeline and update global run_status/run_log."""
-    global run_status, run_log
+def _run_one_station_web(station: dict, log) -> None:
+    """Run all pipeline stages for a single station (web thread context)."""
+    sid = station["id"]
+    snow_station = station["snow_station"]
 
-    def log(msg: str) -> None:
-        global run_log
-        run_log += msg + "\n"
-        logger.info(msg)
+    # 1. Download
+    log(f"1. Lade GeoSphere-Daten für {sid}…")
+    df = download_station_data(config, station)
+    if df.empty:
+        log("   Keine neuen Daten.")
+    else:
+        log(f"   {len(df)} neue 10-Minuten-Werte heruntergeladen.")
 
-    try:
-        log("=== Pipeline gestartet ===")
+    # 2. Write SMET
+    log("2. Schreibe SMET-Datei…")
+    smet_path = write_smet(config, station, df)
+    log(f"   SMET: {smet_path}")
 
-        # 1. Download
-        log("1. Lade GeoSphere-Daten…")
-        df = download_station_data(config)
-        if df.empty:
-            log("   Keine neuen Daten.")
-        else:
-            log(f"   {len(df)} neue 10-Minuten-Werte heruntergeladen.")
-
-        # 2. Write SMET
-        log("2. Schreibe SMET-Datei…")
-        smet_path = write_smet(config, df)
-        log(f"   SMET: {smet_path}")
-
-        # 3. SNO (only if missing)
-        sno_path = Path(config["paths"]["data"]) / "sno" / "tamsichbachturm.sno"
-        if not sno_path.exists():
-            log("3. Schreibe leere SNO-Datei…")
-            season_start = _get_season_start()
-            sno_path = write_empty_sno(config, season_start)
-            log(f"   SNO: {sno_path}")
-        else:
-            log("3. SNO-Datei vorhanden, überspringe.")
-
-        # 4. Write INI
-        log("4. Schreibe INI-Datei…")
-        pro_dir = Path(config["paths"]["data"]) / "pro"
+    # 3. SNO (only if missing)
+    sno_path = Path(config["paths"]["data"]) / "sno" / f"{snow_station}.sno"
+    if not sno_path.exists():
+        log("3. Schreibe leere SNO-Datei…")
         season_start = _get_season_start()
-        end_date = datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)
-        ini_path = write_ini(config, smet_path, sno_path, pro_dir, season_start, end_date)
-        log(f"   INI: {ini_path}")
+        sno_path = write_empty_sno(config, station, season_start)
+        log(f"   SNO: {sno_path}")
+    else:
+        log("3. SNO-Datei vorhanden, überspringe.")
 
-        # 5. Run SNOWPACK
-        log("5. Starte SNOWPACK-Simulation…")
-        runner = SnowpackRunner(config)
-        if not runner.check_binary():
-            log("   SNOWPACK-Binary nicht gefunden — Simulation übersprungen.")
-            log("   Pfad in config.yaml unter snowpack.binary anpassen.")
+    # 4. Write INI
+    log("4. Schreibe INI-Datei…")
+    pro_dir = Path(config["paths"]["data"]) / "pro"
+    season_start = _get_season_start()
+    end_date = datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)
+    ini_path = write_ini(config, station, smet_path, sno_path, pro_dir, season_start, end_date)
+    log(f"   INI: {ini_path}")
+
+    # 5. Run SNOWPACK
+    log("5. Starte SNOWPACK-Simulation…")
+    runner = SnowpackRunner(config, station)
+    if not runner.check_binary():
+        log("   SNOWPACK-Binary nicht gefunden — Simulation übersprungen.")
+        log("   Pfad in config.yaml unter snowpack.binary anpassen.")
+    else:
+        success, sp_log_path = runner.run(ini_path, end_date)
+        if success:
+            runner.update_state(end_date)
+            log(f"   SNOWPACK erfolgreich. Log: {sp_log_path}")
         else:
-            success, log_path = runner.run(ini_path, end_date)
-            if success:
-                runner.update_state(end_date)
-                log(f"   SNOWPACK erfolgreich. Log: {log_path}")
-            else:
-                log(f"   SNOWPACK FEHLER. Siehe Log: {log_path}")
-                # Read last 20 lines of log
-                try:
-                    lines = log_path.read_text(errors="replace").splitlines()[-20:]
-                    log("\n".join(lines))
-                except Exception:
-                    pass
+            log(f"   SNOWPACK FEHLER. Siehe Log: {sp_log_path}")
+            try:
+                lines = sp_log_path.read_text(errors="replace").splitlines()[-20:]
+                log("\n".join(lines))
+            except Exception:
+                pass
 
-        # 6. Classify (AVAPRO)
+    # 6. Classify (AVAPRO)
+    if avapro_enabled:
         log("6. Starte AVAPRO Lawinenproblem-Klassifikation…")
-        pro_path = _find_pro_file()
+        pro_path = _find_pro_file(station)
         if pro_path and pro_path.exists():
-            runner_ava = AvaPRORunner(config)
+            runner_ava = AvaPRORunner(config, station)
             clf_df = runner_ava.run(pro_path, smet_path)
             if clf_df is not None and not clf_df.empty:
                 out_path = runner_ava.save(clf_df)
@@ -289,6 +316,31 @@ def _run_pipeline_thread() -> None:
                 log("   AVAPRO lieferte keine Ergebnisse.")
         else:
             log("   Kein PRO-File gefunden, Klassifikation übersprungen.")
+    else:
+        log("6. AVAPRO deaktiviert — übersprungen.")
+
+
+def _run_pipeline_thread() -> None:
+    """Execute the full pipeline for all stations and update global run_status/run_log."""
+    global run_status, run_log
+
+    def log(msg: str) -> None:
+        global run_log
+        run_log += msg + "\n"
+        logger.info(msg)
+
+    any_failed = False
+    try:
+        log("=== Pipeline gestartet ===")
+
+        for station in _stations_list:
+            log(f"\n--- Station: {station['name']} ({station['id']}) ---")
+            try:
+                _run_one_station_web(station, log)
+            except Exception as exc:
+                log(f"   ✗ Fehler für {station['id']}: {exc}")
+                logger.exception("Station %s pipeline error", station["id"])
+                any_failed = True
 
         # 7. Git push
         if config.get("git", {}).get("auto_push", False):
@@ -300,7 +352,7 @@ def _run_pipeline_thread() -> None:
 
         log("=== Pipeline abgeschlossen ===")
         with run_lock:
-            run_status = "ok"
+            run_status = "error" if any_failed else "ok"
 
     except Exception as exc:
         log(f"FEHLER: {exc}")
@@ -312,6 +364,56 @@ def _run_pipeline_thread() -> None:
 @app.route("/run/status")
 def run_status_endpoint():
     return jsonify({"status": run_status, "log": run_log[-5000:]})
+
+
+@app.route("/api/avapro-toggle", methods=["POST"])
+def api_avapro_toggle():
+    global avapro_enabled
+    avapro_enabled = not avapro_enabled
+    logger.info("AVAPRO %s", "enabled" if avapro_enabled else "disabled")
+    return jsonify({"avapro_enabled": avapro_enabled})
+
+
+@app.route("/api/avapro-status")
+def api_avapro_status():
+    return jsonify({"avapro_enabled": avapro_enabled})
+
+
+@app.route("/api/avapro-season")
+def api_avapro_season():
+    """
+    Return daily avalanche problem flags for the full season.
+
+    AVAPRO writes 4 rows per calendar day (morning/afternoon dry/wet assessments).
+    We aggregate to one row per day with any() — if any assessment flagged a
+    problem, the day is considered to have that problem active.
+    """
+    import pandas as pd
+    station = _get_station(request.args.get("station"))
+    csv_path = (
+        Path(config["paths"]["data"])
+        / "avapro_output"
+        / f"{station['id'].lower()}_problems.csv"
+    )
+    if not csv_path.exists():
+        return jsonify({"dates": [], "new_snow": [], "wind_slab": [],
+                        "persistent_weak_layer": [], "deep_slab": [],
+                        "wet_snow": [], "glide_snow": []})
+    try:
+        df = pd.read_csv(csv_path)
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+        problems = ["new_snow", "wind_slab", "persistent_weak_layer",
+                    "deep_slab", "wet_snow", "glide_snow"]
+        daily = df.groupby("date")[problems].any().reset_index()
+        return jsonify({
+            "dates": [str(d) for d in daily["date"]],
+            **{p: daily[p].tolist() for p in problems},
+        })
+    except Exception as exc:
+        logger.warning("avapro-season failed: %s", exc)
+        return jsonify({"dates": [], "new_snow": [], "wind_slab": [],
+                        "persistent_weak_layer": [], "deep_slab": [],
+                        "wet_snow": [], "glide_snow": []})
 
 
 @app.route("/log")
@@ -343,9 +445,19 @@ def api_pro_files():
     return jsonify(files)
 
 
+@app.route("/api/stations")
+def api_stations():
+    """Return the list of configured stations."""
+    return jsonify([
+        {"id": s["id"], "name": s["name"]}
+        for s in _stations_list
+    ])
+
+
 @app.route("/pro/download")
 def pro_download():
-    pro_path = _find_pro_file()
+    station = _get_station(request.args.get("station"))
+    pro_path = _find_pro_file(station)
     if not pro_path or not pro_path.exists():
         return Response("Keine PRO-Datei vorhanden. Bitte zuerst eine Simulation starten.", status=404)
     return send_file(
@@ -376,7 +488,8 @@ def pro_download_named(filename: str):
 
 @app.route("/niviz")
 def niviz():
-    return render_template("niviz.html")
+    filename = request.args.get("file", "")
+    return render_template("niviz.html", pro_filename=filename)
 
 
 @app.route("/git-push", methods=["POST"])

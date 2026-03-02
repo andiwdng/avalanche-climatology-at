@@ -1,6 +1,15 @@
 # snowpack_steiermark/scripts/smet_writer.py
 """
-Convert GeoSphere Austria hourly data to SNOWPACK SMET 1.1 format.
+Convert GeoSphere Austria station data to SNOWPACK SMET 1.1 format.
+
+Supports per-station field configuration:
+  - Base fields:  timestamp TA RH VW DW ISWR PSUM PSUM_PH HS
+  - Optional ILWR (after ISWR) when station["ilwr"] is True
+  - Optional TSG  (after HS)   when station["tsg"] is True
+
+TSG from lawinen.at is in Celsius; converted to Kelvin here with the rule:
+  if value < 200: value_K = value + 273.15
+(values already in Kelvin are left unchanged)
 """
 from __future__ import annotations
 
@@ -22,38 +31,53 @@ longitude        = {longitude}
 altitude         = {altitude}
 nodata           = -999
 tz               = 0
-fields           = timestamp TA RH VW DW ISWR PSUM PSUM_PH HS
-units            = ISO8601 K - m/s ° W/m2 kg/m2 - m
+fields           = {fields}
+units            = {units}
 [DATA]
 """
-
-SMET_FIELDS = "timestamp TA RH VW DW ISWR PSUM PSUM_PH"
 
 
 class SmetWriter:
     """Converts GeoSphere Austria DataFrames to SNOWPACK SMET 1.1 files."""
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, station: dict) -> None:
         self.config = config
-        self.station_cfg = config["station"]
+        self._station = station
+        self._build_field_lists()
+
+    def _build_field_lists(self) -> None:
+        """Build ordered field/unit lists based on station capabilities."""
+        s = self._station
+        fields = ["timestamp", "TA", "RH", "VW", "DW", "ISWR"]
+        units  = ["ISO8601",   "K",  "-",  "m/s", "°", "W/m2"]
+        if s.get("ilwr"):
+            fields.append("ILWR"); units.append("W/m2")
+        fields += ["PSUM", "PSUM_PH", "HS"]
+        units  += ["kg/m2", "-", "m"]
+        if s.get("tsg"):
+            fields.append("TSG"); units.append("K")
+        self._fields = fields          # includes "timestamp"
+        self._units = units
+        self._numeric_cols = fields[1:]  # excludes "timestamp"
 
     def convert_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Pass-through conversion from lawinen.at SMET DataFrame to SNOWPACK format.
+        Convert raw lawinen.at DataFrame to SNOWPACK SMET format.
 
-        Source data from lawinen.at already uses SNOWPACK-native field names and units:
-        TA [K], RH [0-1], VW [m/s], DW [°], ISWR [W/m²], HS [m].
-        No unit conversion is needed — just fill NaN with nodata sentinel.
+        Source data already uses SNOWPACK-native field names and units for most
+        fields. ILWR and TSG need clipping/conversion; everything else just
+        needs NaN → nodata fill.
 
         Parameters
         ----------
         df : pd.DataFrame
-            Hourly data with columns [timestamp, TA, RH, VW, DW, ISWR, HS].
+            Raw data with at minimum: [timestamp, TA, RH, VW, DW, ISWR, HS].
+            May also contain ILWR and/or TSG (Celsius) depending on station.
 
         Returns
         -------
         pd.DataFrame
-            Data with columns [timestamp, TA, RH, VW, DW, ISWR, PSUM, PSUM_PH, HS].
+            Data ready for SMET output with all configured fields present.
         """
         out = pd.DataFrame()
         out["timestamp"] = df["timestamp"]
@@ -69,6 +93,13 @@ class SmetWriter:
         iswr = df["ISWR"].copy() if "ISWR" in df.columns else pd.Series(np.nan, index=df.index)
         out["ISWR"] = safe(iswr.clip(lower=0).round(6))
 
+        if self._station.get("ilwr"):
+            ilwr = df["ILWR"].copy() if "ILWR" in df.columns else pd.Series(np.nan, index=df.index)
+            # Atmospheric ILWR is physically always >= ~100 W/m²; values below 50
+            # are sensor noise/errors — treat as nodata so generators supply values.
+            ilwr = ilwr.where(ilwr.isna() | (ilwr >= 50), np.nan)
+            out["ILWR"] = safe(ilwr.clip(lower=0).round(6))
+
         # PSUM/PSUM_PH: always nodata — SNOWPACK derives precipitation from HS
         # changes internally when ENFORCE_MEASURED_SNOW_HEIGHTS = TRUE.
         out["PSUM"]    = -999.0
@@ -76,6 +107,28 @@ class SmetWriter:
 
         hs = df["HS"].copy() if "HS" in df.columns else pd.Series(np.nan, index=df.index)
         out["HS"] = safe(hs.clip(lower=0.0).round(4))
+
+        if self._station.get("tsg"):
+            if "TSG" in df.columns:
+                tsg = df["TSG"].copy()
+                # Convert Celsius → Kelvin for values that look like Celsius
+                tsg = tsg.where(tsg.isna() | (tsg >= 200), tsg + 273.15)
+                tsg = tsg.clip(lower=200, upper=310)
+                # Fallback: if <10 % of values are in a physically plausible,
+                # non-saturated range the sensor is likely broken → use 0 °C constant
+                valid_count = ((tsg > 200.5) & (tsg < 309.5)).sum()
+                total_count = tsg.notna().sum()
+                if total_count == 0 or valid_count / total_count < 0.10:
+                    logger.warning(
+                        "TSG sensor for %s has <10%% valid values "
+                        "(%d/%d) — falling back to 273.15 K (0 °C)",
+                        self._station["id"], valid_count, total_count,
+                    )
+                    out["TSG"] = 273.15
+                else:
+                    out["TSG"] = safe(tsg.round(4))
+            else:
+                out["TSG"] = 273.15
 
         return out
 
@@ -93,24 +146,25 @@ class SmetWriter:
             "w" writes full file including header; "a" appends data rows only.
         """
         smet_path.parent.mkdir(parents=True, exist_ok=True)
-        numeric_cols = ["TA", "RH", "VW", "DW", "ISWR", "PSUM", "PSUM_PH", "HS"]
 
         if mode == "w":
             header = SMET_HEADER_TEMPLATE.format(
-                station_id=self.station_cfg["id"],
-                station_name=self.station_cfg["name"],
-                latitude=self.station_cfg["latitude"],
-                longitude=self.station_cfg["longitude"],
-                altitude=self.station_cfg["altitude"],
+                station_id=self._station["snow_station"],
+                station_name=self._station["name"],
+                latitude=self._station["latitude"],
+                longitude=self._station["longitude"],
+                altitude=self._station["altitude"],
+                fields=" ".join(self._fields),
+                units=" ".join(self._units),
             )
             with open(smet_path, "w") as fh:
                 fh.write(header)
-                self._write_rows(fh, df, numeric_cols)
+                self._write_rows(fh, df)
         else:
             with open(smet_path, "a") as fh:
-                self._write_rows(fh, df, numeric_cols)
+                self._write_rows(fh, df)
 
-    def _write_rows(self, fh, df: pd.DataFrame, numeric_cols: list[str]) -> None:
+    def _write_rows(self, fh, df: pd.DataFrame) -> None:
         """Write DATA rows to an open file handle."""
         for _, row in df.iterrows():
             ts = row["timestamp"]
@@ -119,7 +173,7 @@ class SmetWriter:
             else:
                 ts_str = str(ts)
             vals = []
-            for col in numeric_cols:
+            for col in self._numeric_cols:
                 v = row.get(col, -999.0)
                 if pd.isna(v):
                     v = -999.0
@@ -203,10 +257,12 @@ class SmetWriter:
         Strategy per variable
         ---------------------
         TA, RH     : linear interpolation (up to 10 days)
-        ISWR       : linear interpolation, clipped >= 0
+        ISWR       : linear interpolation, clipped >= 0 (up to 10 days)
+        ILWR       : linear interpolation, clipped >= 0 (up to 10 days)
         VW         : forward-fill, fallback 2.0 m/s
         DW         : forward-fill, fallback 180 deg
         HS (Fix 3) : forward-fill only (carry snow height, never interpolate)
+        TSG        : linear interpolation (up to 2 days)
         PSUM/PH    : always nodata (SNOWPACK derives from delta-HS)
         """
         if df.empty:
@@ -225,6 +281,13 @@ class SmetWriter:
         if "ISWR" in idx.columns:
             idx["ISWR"] = idx["ISWR"].interpolate(method="time", limit=limit).clip(lower=0.0)
 
+        if "ILWR" in idx.columns:
+            # Atmospheric ILWR is physically always >= ~100 W/m²; values below 50
+            # are sensor errors (e.g. LOSE lango sensor reports 1-2 W/m²).
+            # Blank them so MeteoIO ALLSKY_LW / CLEARSKY_LW generators supply values.
+            idx["ILWR"] = idx["ILWR"].where(idx["ILWR"] >= 50, np.nan)
+            idx["ILWR"] = idx["ILWR"].interpolate(method="time", limit=limit).clip(lower=0.0)
+
         if "VW" in idx.columns:
             idx["VW"] = idx["VW"].ffill(limit=limit).fillna(2.0)
 
@@ -234,12 +297,16 @@ class SmetWriter:
         if "HS" in idx.columns:
             idx["HS"] = idx["HS"].ffill(limit=limit).clip(lower=0.0).fillna(0.0)
 
+        if "TSG" in idx.columns:
+            tsg_limit = 288  # 2 days at 10-minute resolution
+            idx["TSG"] = idx["TSG"].interpolate(method="time", limit=tsg_limit)
+
         idx["PSUM"] = float("nan")
         idx["PSUM_PH"] = float("nan")
         return idx.reset_index()
 
 
-def write_smet(config: dict, df: pd.DataFrame) -> Path:
+def write_smet(config: dict, station: dict, df: pd.DataFrame) -> Path:
     """
     Write or append GeoSphere data to the station SMET file.
 
@@ -247,15 +314,17 @@ def write_smet(config: dict, df: pd.DataFrame) -> Path:
     ----------
     config : dict
         Parsed config.yaml.
+    station : dict
+        Station entry from config["stations"] list.
     df : pd.DataFrame
-        New hourly data from GeoSphereDownloader.
+        New data from GeoSphereDownloader.
 
     Returns
     -------
     Path
         Path to the SMET file.
     """
-    smet_path = Path(config["paths"]["data"]) / "smet" / "TAMI2.smet"
-    writer = SmetWriter(config)
+    smet_path = Path(config["paths"]["data"]) / "smet" / f"{station['snow_station']}.smet"
+    writer = SmetWriter(config, station)
     writer.write_or_append(df, smet_path)
     return smet_path
