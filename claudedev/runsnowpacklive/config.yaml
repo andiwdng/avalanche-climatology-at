@@ -9,7 +9,7 @@ stations:
     longitude: 14.717084
     altitude: 1425
     ilwr: false
-    tsg: false
+    tss: false   # no TSS sensor; set true when lawinen.at delivers TSS field
 
   - id: LOSE
     name: "Altaussee Loser"
@@ -19,7 +19,7 @@ stations:
     longitude: 13.784403
     altitude: 1573
     ilwr: true
-    tsg: false   # sensor broken: oscillates 200-310K; use CST 273.15 K instead
+    tss: false   # set true when lawinen.at delivers TSS field
 
   - id: VEIT
     name: "Veitsch"
@@ -29,7 +29,7 @@ stations:
     longitude: 15.420722
     altitude: 1323
     ilwr: true
-    tsg: false   # sensor broken: oscillates 200-310K; use CST 273.15 K instead
+    tss: false   # set true when lawinen.at delivers TSS field
 
   - id: PLAN
     name: "Planneralm"
@@ -39,7 +39,7 @@ stations:
     longitude: 14.193223
     altitude: 1707
     ilwr: false
-    tsg: false
+    tss: false   # set true when lawinen.at delivers TSS field
 
   - id: GRBU
     name: "Großer Buchstein"
@@ -49,7 +49,7 @@ stations:
     longitude: 14.60422
     altitude: 2089
     ilwr: true
-    tsg: false   # tg sensor: -28 °C surface vs -2 °C air → suspicious; CST 273.15 K for now
+    tss: false   # set true when lawinen.at delivers TSS field
 
 # backward-compat alias (used by git_sync, old code)
 station:

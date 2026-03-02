@@ -62,27 +62,39 @@ def write_ini(
 
     # Per-station flags
     meas_ilwr = "TRUE" if station.get("ilwr") else "FALSE"
+    meas_tss  = "TRUE" if station.get("tss")  else "FALSE"
 
-    # TSG generator: only add when station does NOT have measured TSG
-    tsg_generator_lines = ""
-    if not station.get("tsg"):
-        tsg_generator_lines = """\
+    # TSG (ground surface temperature) is ALWAYS the 273.15 K constant.
+    # It is never read from sensor data.
+    tsg_generator_lines = """\
 TSG::create         =    CST
 TSG::CST::VALUE     =    273.15
 """
 
-    # Extra filters for ILWR and TSG when station has measured ILWR
-    ilwr_tsg_filter_lines = ""
+    # ILWR filter when station has measured long-wave radiation
+    ilwr_filter_lines = ""
     if station.get("ilwr"):
-        ilwr_tsg_filter_lines = """\
+        ilwr_filter_lines = """\
 ILWR::filter1      =    min_max
 ILWR::arg1::SOFT   =    TRUE
 ILWR::arg1::MIN    =    50
 ILWR::arg1::MAX    =    600
-TSG::filter1       =    min_max
-TSG::arg1::SOFT    =    TRUE
-TSG::arg1::MIN     =    200
-TSG::arg1::MAX     =    310
+"""
+
+    # TSS filter + resampling when station has measured snow surface temperature
+    tss_filter_lines = ""
+    tss_resample_lines = ""
+    if station.get("tss"):
+        tss_filter_lines = """\
+TSS::filter1       =    min_max
+TSS::arg1::SOFT    =    TRUE
+TSS::arg1::MIN     =    210
+TSS::arg1::MAX     =    280
+"""
+        tss_resample_lines = """\
+TSS::resample                  =    linear
+TSS::linear::window_size       =    864000
+TSS::linear::extrapolate       =    true
 """
 
     content = f"""\
@@ -148,7 +160,7 @@ ENFORCE_MEASURED_SNOW_HEIGHTS  =    TRUE
 SW_MODE                        =    INCOMING
 ATMOSPHERIC_STABILITY          =    NEUTRAL
 CANOPY                         =    FALSE
-MEAS_TSS                       =    FALSE
+MEAS_TSS                       =    {meas_tss}
 CHANGE_BC                      =    TRUE
 THRESH_CHANGE_BC               =    -1.2
 SNP_SOIL                       =    FALSE
@@ -239,7 +251,7 @@ HS::arg3::SOFT     =    TRUE
 HS::arg3::CENTERING     =    left
 HS::arg3::MIN_PTS  =    10
 HS::arg3::MIN_SPAN =    21600
-{ilwr_tsg_filter_lines}
+{ilwr_filter_lines}{tss_filter_lines}
 [INTERPOLATIONS1D]
 ENABLE_RESAMPLING    =    TRUE
 WINDOW_SIZE          =    864000
@@ -266,6 +278,7 @@ PSUM::accumulate::PERIOD       =    900
 HS::resample                   =    nearest
 HS::nearest::window_size       =    864000
 HS::nearest::extrapolate       =    true
+{tss_resample_lines}
 
 [GENERATORS]
 ISWR::generators          =    ISWR_ALBEDO ALLSKY_SW

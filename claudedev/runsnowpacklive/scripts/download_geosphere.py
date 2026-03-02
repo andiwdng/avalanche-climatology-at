@@ -14,9 +14,10 @@ Strategy:
   - Data is 10-minute resolution; MeteoIO handles resampling to simulation step.
 
 Field renames applied after fetching:
-  - ISWR2  → ISWR  (LOSE2, VEIT2; only when ISWR not already present)
-  - lango  → ILWR  (LOSE2, VEIT2)
-  - tg     → TSG   (LOSE2, VEIT2; raw Celsius kept as-is; SmetWriter converts to K)
+  - ISWR2  → ISWR  (only when ISWR not already present)
+  - lango  → ILWR
+  - tg     → TSS   (snow surface temperature, raw Celsius; SmetWriter converts to K)
+  - TSG    → TSS   (same sensor, old field name; dropped when both TSG and tg exist)
 
 Unused columns dropped: ISWRu, langu, slope1* etc.
 
@@ -203,11 +204,15 @@ class GeoSphereDownloader:
         if "lango" in df.columns:
             df = df.rename(columns={"lango": "ILWR"})
 
+        # TSG and tg are both snow surface temperature (mislabelled as ground temp).
+        # Rename to TSS. New SMET format will deliver TSS directly.
         if "tg" in df.columns:
-            # VEIT2 has both a pre-labelled TSG column and tg — drop the duplicate
+            # Drop the pre-labelled TSG when both exist (tg is the better column)
             if "TSG" in df.columns:
                 df = df.drop(columns=["TSG"])
-            df = df.rename(columns={"tg": "TSG"})
+            df = df.rename(columns={"tg": "TSS"})
+        elif "TSG" in df.columns:
+            df = df.rename(columns={"TSG": "TSS"})
 
         # Drop unused columns
         drop = [c for c in df.columns

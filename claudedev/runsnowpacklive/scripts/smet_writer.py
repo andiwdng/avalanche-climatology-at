@@ -5,11 +5,14 @@ Convert GeoSphere Austria station data to SNOWPACK SMET 1.1 format.
 Supports per-station field configuration:
   - Base fields:  timestamp TA RH VW DW ISWR PSUM PSUM_PH HS
   - Optional ILWR (after ISWR) when station["ilwr"] is True
-  - Optional TSG  (after HS)   when station["tsg"] is True
+  - Optional TSS  (after HS)   when station["tss"] is True
 
-TSG from lawinen.at is in Celsius; converted to Kelvin here with the rule:
-  if value < 200: value_K = value + 273.15
-(values already in Kelvin are left unchanged)
+TSS (snow surface temperature) from lawinen.at is in Celsius; converted to
+Kelvin with the rule: if value < 200: value_K = value + 273.15
+Valid range after conversion: 200–274 K (snow surface ≤ 0 °C).
+
+TSG (ground surface temperature, SNOWPACK bottom boundary) is always generated
+as a 273.15 K constant by MeteoIO — never read from sensor data.
 """
 from __future__ import annotations
 
@@ -54,8 +57,8 @@ class SmetWriter:
             fields.append("ILWR"); units.append("W/m2")
         fields += ["PSUM", "PSUM_PH", "HS"]
         units  += ["kg/m2", "-", "m"]
-        if s.get("tsg"):
-            fields.append("TSG"); units.append("K")
+        if s.get("tss"):
+            fields.append("TSS"); units.append("K")
         self._fields = fields          # includes "timestamp"
         self._units = units
         self._numeric_cols = fields[1:]  # excludes "timestamp"
@@ -108,27 +111,13 @@ class SmetWriter:
         hs = df["HS"].copy() if "HS" in df.columns else pd.Series(np.nan, index=df.index)
         out["HS"] = safe(hs.clip(lower=0.0).round(4))
 
-        if self._station.get("tsg"):
-            if "TSG" in df.columns:
-                tsg = df["TSG"].copy()
-                # Convert Celsius → Kelvin for values that look like Celsius
-                tsg = tsg.where(tsg.isna() | (tsg >= 200), tsg + 273.15)
-                tsg = tsg.clip(lower=200, upper=310)
-                # Fallback: if <10 % of values are in a physically plausible,
-                # non-saturated range the sensor is likely broken → use 0 °C constant
-                valid_count = ((tsg > 200.5) & (tsg < 309.5)).sum()
-                total_count = tsg.notna().sum()
-                if total_count == 0 or valid_count / total_count < 0.10:
-                    logger.warning(
-                        "TSG sensor for %s has <10%% valid values "
-                        "(%d/%d) — falling back to 273.15 K (0 °C)",
-                        self._station["id"], valid_count, total_count,
-                    )
-                    out["TSG"] = 273.15
-                else:
-                    out["TSG"] = safe(tsg.round(4))
-            else:
-                out["TSG"] = 273.15
+        if self._station.get("tss"):
+            tss_raw = df["TSS"].copy() if "TSS" in df.columns else pd.Series(np.nan, index=df.index)
+            # Convert Celsius → Kelvin for values that look like Celsius
+            tss_raw = tss_raw.where(tss_raw.isna() | (tss_raw >= 200), tss_raw + 273.15)
+            # Clip to plausible range; MeteoIO SOFT filter removes outliers
+            tss_raw = tss_raw.clip(lower=210, upper=280)
+            out["TSS"] = safe(tss_raw.round(4))
 
         return out
 
@@ -261,8 +250,8 @@ class SmetWriter:
         ILWR       : linear interpolation, clipped >= 0 (up to 10 days)
         VW         : forward-fill, fallback 2.0 m/s
         DW         : forward-fill, fallback 180 deg
-        HS (Fix 3) : forward-fill only (carry snow height, never interpolate)
-        TSG        : linear interpolation (up to 2 days)
+        HS         : forward-fill only (carry snow height, never interpolate)
+        TSS        : linear interpolation (up to 2 days), clipped 200–274 K
         PSUM/PH    : always nodata (SNOWPACK derives from delta-HS)
         """
         if df.empty:
@@ -297,9 +286,9 @@ class SmetWriter:
         if "HS" in idx.columns:
             idx["HS"] = idx["HS"].ffill(limit=limit).clip(lower=0.0).fillna(0.0)
 
-        if "TSG" in idx.columns:
-            tsg_limit = 288  # 2 days at 10-minute resolution
-            idx["TSG"] = idx["TSG"].interpolate(method="time", limit=tsg_limit)
+        if "TSS" in idx.columns:
+            tss_limit = 288  # 2 days at 10-minute resolution
+            idx["TSS"] = idx["TSS"].interpolate(method="time", limit=tss_limit)
 
         idx["PSUM"] = float("nan")
         idx["PSUM_PH"] = float("nan")
