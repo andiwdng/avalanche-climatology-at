@@ -431,14 +431,38 @@
     // ----------------------------------------------------------------
     let combinedChart = null;
     let _combinedData = null;
+    let _crosshairListenersAdded = false;
+
+    // Crosshair plugin — draws vertical line on chart canvas
+    const _crosshairPlugin = {
+      id: "crosshair",
+      afterDraw(chart) {
+        if (chart._crosshairX == null) return;
+        const { ctx, chartArea } = chart;
+        const x = chart._crosshairX;
+        if (x < chartArea.left || x > chartArea.right) return;
+        ctx.save();
+        ctx.strokeStyle = "rgba(50,50,50,0.5)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x, chartArea.top);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+    };
 
     // Meteo layer definitions
+    // ta_max and ta_min share the same togKey "ta" — one button controls both
     const _METEO_LAYERS = [
-      { togKey: "hs",   dataKey: "hs_cm",    label: "HS [cm]",     color: "rgba(26,111,187,0.65)",  type: "bar",  yAxis: "yHs",   defaultOn: true  },
-      { togKey: "ta",   dataKey: "ta_c",     label: "TA [°C]",     color: "rgb(231,76,60)",         type: "line", yAxis: "yTa",   defaultOn: false },
-      { togKey: "rh",   dataKey: "rh_pct",   label: "RH [%]",      color: "rgb(39,174,96)",         type: "line", yAxis: "yRh",   defaultOn: false },
-      { togKey: "vw",   dataKey: "vw_ms",    label: "VW [m/s]",    color: "rgb(243,156,18)",        type: "line", yAxis: "yVw",   defaultOn: false },
-      { togKey: "iswr", dataKey: "iswr_wm2", label: "ISWR [W/m²]", color: "rgb(241,196,15)",        type: "line", yAxis: "yIswr", defaultOn: false },
+      { togKey: "hs",   dataKey: "hs_cm",    label: "HS [cm]",        color: "rgba(26,111,187,0.65)",  type: "bar",  yAxis: "yHs",   defaultOn: true  },
+      { togKey: "ta",   dataKey: "ta_max",   label: "TA max [°C]",    color: "rgb(231,76,60)",         type: "line", yAxis: "yTa",   defaultOn: false, fillNext: true },
+      { togKey: "ta",   dataKey: "ta_min",   label: "TA min [°C]",    color: "rgba(231,76,60,0.35)",   type: "line", yAxis: "yTa",   defaultOn: false, borderDash: [4,3] },
+      { togKey: "rh",   dataKey: "rh_pct",   label: "RH [%]",         color: "rgb(39,174,96)",         type: "line", yAxis: "yRh",   defaultOn: false },
+      { togKey: "vw",   dataKey: "vw_ms",    label: "VW max [m/s]",   color: "rgb(243,156,18)",        type: "line", yAxis: "yVw",   defaultOn: false },
+      { togKey: "iswr", dataKey: "iswr_wm2", label: "ISWR max [W/m²]",color: "rgb(241,196,15)",        type: "line", yAxis: "yIswr", defaultOn: false },
     ];
 
     // AVAPRO problem definitions (no Gleitschnee; Tiefer Schnee → Altschnee (Tief))
@@ -478,23 +502,29 @@
       const ctx = document.getElementById("combined-chart").getContext("2d");
       if (combinedChart) combinedChart.destroy();
 
-      const datasets = _METEO_LAYERS.map(m => ({
-        label: m.label,
-        data: d[m.dataKey] || [],
-        borderColor: m.color,
-        backgroundColor: m.color,
-        fill: false,
-        type: m.type,
-        yAxisID: m.yAxis,
-        pointRadius: 0,
-        borderWidth: m.type === "bar" ? 0 : 1.5,
-        barPercentage: 1.0,
-        categoryPercentage: 1.0,
-        hidden: !_vis[m.togKey],
-        _togKey: m.togKey,
-      }));
+      // Build datasets; ta_max gets fill: '+1' to shade down to ta_min
+      const datasets = _METEO_LAYERS.map((m, idx) => {
+        const ds = {
+          label: m.label,
+          data: d[m.dataKey] || [],
+          borderColor: m.color,
+          backgroundColor: m.fillNext ? "rgba(231,76,60,0.12)" : m.color,
+          fill: m.fillNext ? "+1" : false,
+          type: m.type,
+          yAxisID: m.yAxis,
+          pointRadius: 0,
+          borderWidth: m.type === "bar" ? 0 : 1.5,
+          barPercentage: 1.0,
+          categoryPercentage: 1.0,
+          hidden: !_vis[m.togKey],
+          _togKey: m.togKey,
+        };
+        if (m.borderDash) ds.borderDash = m.borderDash;
+        return ds;
+      });
 
       combinedChart = new Chart(ctx, {
+        plugins: [_crosshairPlugin],
         type: "bar",
         data: { labels, datasets },
         options: {
@@ -518,13 +548,15 @@
         },
       });
 
+      _addCrosshairListeners();
       // Draw AVAPRO bands after Chart.js finishes rendering
-      setTimeout(_drawAvaproBands, 80);
+      setTimeout(() => _drawAvaproBands(null), 80);
     }
 
-    function _drawAvaproBands() {
+    function _drawAvaproBands(crosshairX) {
       const canvas = document.getElementById("combined-avapro-canvas");
-      if (!combinedChart || !_combinedData) { canvas.style.display = "none"; return; }
+      const chartCanvas = document.getElementById("combined-chart");
+      if (!combinedChart || !_combinedData || !chartCanvas) { canvas.style.display = "none"; return; }
 
       const d = _combinedData;
       const nDays = (d.dates || []).length;
@@ -536,12 +568,13 @@
       const visible = _AVA_LAYERS.filter(a => _vis[a.key]);
       if (!visible.length) { canvas.style.display = "none"; return; }
 
-      const ROW_H   = 22;
-      const labelW  = ca.left;          // align label area to chart's left margin
-      const dataW   = ca.right - ca.left;
-      const cellW   = dataW / nDays;
-      const totalW  = Math.ceil(ca.right);
-      const totalH  = visible.length * ROW_H + 2;
+      const ROW_H  = 22;
+      // Use full chart canvas CSS width so crosshair x coordinates align exactly
+      const totalW = chartCanvas.offsetWidth;
+      const totalH = visible.length * ROW_H + 2;
+      const labelW = ca.left;
+      const dataW  = ca.right - ca.left;
+      const cellW  = dataW / nDays;
 
       canvas.width  = totalW;
       canvas.height = totalH;
@@ -571,6 +604,54 @@
         ctx.strokeStyle = "#ccc";
         ctx.strokeRect(ca.left, y, nDays * cellW, ROW_H - 2);
       });
+
+      // --- crosshair ruler ---
+      if (crosshairX != null && crosshairX >= ca.left && crosshairX <= ca.right) {
+        ctx.strokeStyle = "rgba(50,50,50,0.5)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.moveTo(crosshairX, 0);
+        ctx.lineTo(crosshairX, totalH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // date label above the first row
+        const dayIdx = Math.round((crosshairX - ca.left) / cellW);
+        if (dayIdx >= 0 && dayIdx < d.dates.length) {
+          const dateStr = d.dates[dayIdx];
+          ctx.font = "bold 10px system-ui, sans-serif";
+          ctx.fillStyle = "rgba(0,0,0,0.75)";
+          ctx.textAlign = crosshairX > totalW - 80 ? "right" : "left";
+          const lx = crosshairX > totalW - 80 ? crosshairX - 3 : crosshairX + 3;
+          ctx.fillText(dateStr, lx, 11);
+        }
+      }
+    }
+
+    function _addCrosshairListeners() {
+      if (_crosshairListenersAdded) return;
+      _crosshairListenersAdded = true;
+      const canvas = document.getElementById("combined-chart");
+      canvas.addEventListener("mousemove", function(e) {
+        if (!combinedChart) return;
+        const rect = this.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const ca = combinedChart.chartArea;
+        if (!ca) return;
+        const newX = (x >= ca.left && x <= ca.right) ? x : null;
+        if (newX !== combinedChart._crosshairX) {
+          combinedChart._crosshairX = newX;
+          combinedChart.update("none");
+          _drawAvaproBands(newX);
+        }
+      });
+      canvas.addEventListener("mouseleave", function() {
+        if (!combinedChart) return;
+        combinedChart._crosshairX = null;
+        combinedChart.update("none");
+        _drawAvaproBands(null);
+      });
     }
 
     function toggleMeteoLayer(togKey) {
@@ -587,7 +668,8 @@
         combinedChart.options.scales[axisMap[togKey]].display = _vis[togKey];
       }
       combinedChart.update();
-      setTimeout(_drawAvaproBands, 50);
+      const cx = combinedChart._crosshairX ?? null;
+      setTimeout(() => _drawAvaproBands(cx), 50);
     }
 
     function toggleAvaLayer(avaKey) {
@@ -595,7 +677,7 @@
       const btnId = "tog-" + avaKey;
       const btn = document.getElementById(btnId);
       if (btn) btn.classList.toggle("combined-tog-on", _vis[avaKey]);
-      _drawAvaproBands();
+      _drawAvaproBands(combinedChart ? (combinedChart._crosshairX ?? null) : null);
     }
 
     // ----------------------------------------------------------------

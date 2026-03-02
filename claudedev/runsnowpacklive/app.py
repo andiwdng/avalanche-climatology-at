@@ -398,7 +398,7 @@ def api_combined_chart():
     import numpy as np
     station = _get_station(request.args.get("station"))
 
-    result = {k: [] for k in ["dates", "hs_cm", "ta_c", "rh_pct",
+    result = {k: [] for k in ["dates", "hs_cm", "ta_max", "ta_min", "rh_pct",
                                "vw_ms", "iswr_wm2", "new_snow",
                                "wind_slab", "persistent_weak_layer",
                                "deep_slab", "wet_snow"]}
@@ -420,13 +420,15 @@ def api_combined_chart():
                         return pd.Series(dtype=float)
                     return df.groupby("date")[col].apply(fn)
 
-                hs  = _agg("HS",   lambda x: x.max() * 100)
-                ta  = _agg("TA",   lambda x: x.mean() - 273.15)
-                rh  = _agg("RH",   lambda x: x.mean() * 100)
-                vw  = _agg("VW",   lambda x: x.mean())
-                iswr= _agg("ISWR", lambda x: x.mean())
+                hs      = _agg("HS",   lambda x: x.max() * 100)
+                ta_max  = _agg("TA",   lambda x: x.max() - 273.15)
+                ta_min  = _agg("TA",   lambda x: x.min() - 273.15)
+                rh      = _agg("RH",   lambda x: x.mean() * 100)
+                vw      = _agg("VW",   lambda x: x.max())   # peak wind
+                iswr    = _agg("ISWR", lambda x: x.max())   # peak radiation
 
-                daily = pd.DataFrame({"hs_cm": hs, "ta_c": ta, "rh_pct": rh,
+                daily = pd.DataFrame({"hs_cm": hs, "ta_max": ta_max,
+                                      "ta_min": ta_min, "rh_pct": rh,
                                       "vw_ms": vw, "iswr_wm2": iswr})
                 daily = daily.reset_index().rename(columns={"index": "date"})
                 smet_dates = list(daily["date"])
@@ -437,7 +439,8 @@ def api_combined_chart():
 
                 result["dates"]    = [str(d) for d in smet_dates]
                 result["hs_cm"]    = _clean(daily["hs_cm"])
-                result["ta_c"]     = _clean(daily["ta_c"])
+                result["ta_max"]   = _clean(daily["ta_max"])
+                result["ta_min"]   = _clean(daily["ta_min"])
                 result["rh_pct"]   = _clean(daily["rh_pct"])
                 result["vw_ms"]    = _clean(daily["vw_ms"])
                 result["iswr_wm2"] = _clean(daily["iswr_wm2"])
