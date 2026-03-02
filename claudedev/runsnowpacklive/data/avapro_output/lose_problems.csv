@@ -709,8 +709,8 @@ date,new_snow,wind_slab,persistent_weak_layer,deep_slab,wet_snow,glide_snow
 2026-02-24,True,False,False,False,False,False
 2026-02-25,True,False,False,False,False,False
 2026-02-25,True,False,False,False,False,False
-2026-02-25,True,False,False,False,False,False
-2026-02-25,True,False,False,False,False,False
+2026-02-25,False,False,False,False,False,False
+2026-02-25,False,False,False,False,False,False
 2026-02-26,False,False,False,False,True,False
 2026-02-26,False,False,False,False,True,False
 2026-02-26,False,False,False,False,True,False
