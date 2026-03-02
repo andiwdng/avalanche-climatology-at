@@ -41,6 +41,16 @@ stations:
     ilwr: false
     tsg: false
 
+  - id: GRBU
+    name: "Großer Buchstein"
+    snow_station: GRBU2
+    wind_station: GRBU1
+    latitude: 47.61243
+    longitude: 14.60422
+    altitude: 2089
+    ilwr: true
+    tsg: false   # tg sensor: -28 °C surface vs -2 °C air → suspicious; CST 273.15 K for now
+
 # backward-compat alias (used by git_sync, old code)
 station:
   id: "TAMI"

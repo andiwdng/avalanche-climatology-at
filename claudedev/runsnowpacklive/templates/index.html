@@ -7,6 +7,7 @@
   <title>SNOWPACK Steiermark — {{ station_name }}</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     .combined-tog {
       border: 2px solid var(--tog-color, #888);
@@ -22,6 +23,7 @@
     }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
   <!-- Navbar -->
@@ -42,52 +44,72 @@
   <div class="container-fluid mt-3">
     <div class="row g-3">
 
-      <!-- Left column: Status -->
+      <!-- Left column: Status + Station info + Map -->
       <div class="col-lg-6">
 
-        <!-- Simulation status -->
-        <div class="card mb-3">
-          <div class="card-header fw-bold">📡 Letzte Simulation</div>
-          <div class="card-body">
-            <span class="status-value" id="last-simulation">—</span>
-            <span class="badge ms-2" id="sim-badge">—</span>
-          </div>
-        </div>
-
-        <!-- Data download status -->
-        <div class="card mb-3">
-          <div class="card-header fw-bold">⬇️ Letzte Daten</div>
-          <div class="card-body">
-            <span class="status-value" id="last-download">—</span>
-            <span class="badge ms-2" id="dl-badge">—</span>
-          </div>
-        </div>
-
-        <!-- Snow cover -->
-        <div class="card mb-3">
-          <div class="card-header fw-bold">❄️ Aktuelle Schneedecke</div>
-          <div class="card-body row">
-            <div class="col-6 text-center">
-              <div class="small text-muted">Schneehöhe</div>
-              <div class="status-value" id="snow-height">—</div>
-              <div class="small text-muted">cm</div>
+        <!-- Compact status bar -->
+        <div class="card mb-2">
+          <div class="card-body py-2 px-3 d-flex flex-wrap gap-4 align-items-center">
+            <div class="small">
+              <span class="text-muted">📡 Simulation:</span>
+              <span class="fw-semibold ms-1" id="last-simulation">—</span>
+              <span class="badge ms-1" id="sim-badge">—</span>
             </div>
-            <div class="col-6 text-center">
-              <div class="small text-muted">Oberflächentemp.</div>
-              <div class="status-value" id="surface-temp">—</div>
-              <div class="small text-muted">°C</div>
+            <div class="small">
+              <span class="text-muted">⬇️ Daten:</span>
+              <span class="fw-semibold ms-1" id="last-download">—</span>
+              <span class="badge ms-1" id="dl-badge">—</span>
             </div>
           </div>
         </div>
 
-        <!-- Avalanche problems -->
-        <div class="card mb-3">
-          <div class="card-header fw-bold">⚠️ Lawinenprobleme heute</div>
-          <div class="card-body">
-            <span id="prob-new-snow"    class="problem-badge problem-inactive">❄️ Neuschnee</span>
-            <span id="prob-wind-slab"   class="problem-badge problem-inactive">🌬️ Triebschnee</span>
-            <span id="prob-pwl"         class="problem-badge problem-inactive">🏔️ Altschnee/PWL</span>
-            <span id="prob-wet-snow"    class="problem-badge problem-inactive">💧 Nassschnee</span>
+        <!-- Station details -->
+        <div class="card mb-2">
+          <div class="card-header fw-bold py-2">📍 Station</div>
+          <div class="card-body py-2">
+            <div class="row g-2 small">
+              <div class="col-7">
+                <div class="text-muted mb-1">Name</div>
+                <div class="fw-semibold" id="si-name">—</div>
+              </div>
+              <div class="col-5">
+                <div class="text-muted mb-1">Seehöhe</div>
+                <div class="fw-semibold" id="si-alt">—</div>
+              </div>
+              <div class="col-7">
+                <div class="text-muted mb-1">Koordinaten</div>
+                <div class="text-monospace" id="si-coord">—</div>
+              </div>
+              <div class="col-5">
+                <div class="text-muted mb-1">Schneehöhe / TSS</div>
+                <div><span class="fw-semibold" id="snow-height">—</span> <span class="text-muted">cm</span>
+                     &nbsp;/&nbsp;<span class="fw-semibold" id="surface-temp">—</span> <span class="text-muted">°C</span></div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted mb-1">Schneemessstation</div>
+                <div><code id="si-snow">—</code> <span class="text-muted small">(TA, RH, HS, ISWR…)</span></div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted mb-1">Windmessstation</div>
+                <div><code id="si-wind">—</code> <span class="text-muted small">(VW, DW)</span></div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted mb-1">ILWR</div>
+                <div id="si-ilwr">—</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted mb-1">TSG Boden</div>
+                <div id="si-tsg">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Station map -->
+        <div class="card mb-2">
+          <div class="card-header fw-bold py-2">🗺 Stationskarte</div>
+          <div class="card-body p-0">
+            <div id="station-map" style="height:280px;border-radius:0 0 .375rem .375rem;"></div>
           </div>
         </div>
 
@@ -224,6 +246,9 @@
   </div><!-- /container -->
 
   <script>
+    // Stations data embedded from server config (lat/lon/alt/flags)
+    const _STATIONS_DATA = {{ stations | tojson }};
+
     // ----------------------------------------------------------------
     // Station selector
     // ----------------------------------------------------------------
@@ -232,7 +257,10 @@
     }
 
     function onStationChange() {
+      const sid = selectedStation();
       loadStatus();
+      loadStationInfo(sid);
+      _updateMapHighlight(sid);
       loadCombinedChart();
       // Reset SMET chart cache so next open reloads for the new station
       _smetLoaded = false;
@@ -240,6 +268,76 @@
       if (!box.classList.contains("d-none")) {
         loadSmetCharts();
       }
+    }
+
+    // ----------------------------------------------------------------
+    // Station info panel
+    // ----------------------------------------------------------------
+    function loadStationInfo(stationId) {
+      const sid = stationId || selectedStation();
+      const s = _STATIONS_DATA.find(st => st.id === sid);
+      if (!s) return;
+      document.getElementById("si-name").textContent  = s.name;
+      document.getElementById("si-alt").textContent   = s.altitude + " m ü.A.";
+      document.getElementById("si-coord").textContent =
+        s.latitude.toFixed(5) + "°N,  " + s.longitude.toFixed(5) + "°E";
+      document.getElementById("si-snow").textContent  = s.snow_station;
+      document.getElementById("si-wind").textContent  = s.wind_station;
+      document.getElementById("si-ilwr").textContent  =
+        s.ilwr ? "gemessen (lango → ILWR)" : "berechnet (ALLSKY_LW)";
+      document.getElementById("si-tsg").textContent   =
+        s.tsg ? "gemessen (tg → TSG)" : "Konstante 0 °C";
+    }
+
+    // ----------------------------------------------------------------
+    // Leaflet station map
+    // ----------------------------------------------------------------
+    let _map = null;
+    const _mapMarkers = {};
+
+    function initMap() {
+      _map = L.map("station-map", { zoomControl: true });
+      L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+        attribution: "© <a href='https://opentopomap.org'>OpenTopoMap</a> (CC-BY-SA)",
+        maxZoom: 17,
+      }).addTo(_map);
+
+      const sel = selectedStation();
+      _STATIONS_DATA.forEach(s => {
+        const isSelected = s.id === sel;
+        const marker = L.circleMarker([s.latitude, s.longitude], {
+          radius: isSelected ? 10 : 7,
+          fillColor: isSelected ? "#1a6fbb" : "#888",
+          color: "#fff",
+          weight: 2,
+          opacity: 1,
+          fillOpacity: 0.85,
+        }).addTo(_map);
+        marker.bindTooltip(
+          `<strong>${s.name}</strong><br>${s.altitude} m ü.A.`,
+          { permanent: false, direction: "top" }
+        );
+        marker.on("click", () => {
+          document.getElementById("station-select").value = s.id;
+          onStationChange();
+        });
+        _mapMarkers[s.id] = marker;
+      });
+
+      const bounds = _STATIONS_DATA.map(s => [s.latitude, s.longitude]);
+      if (bounds.length > 1) {
+        _map.fitBounds(bounds, { padding: [30, 30] });
+      } else if (bounds.length === 1) {
+        _map.setView(bounds[0], 10);
+      }
+    }
+
+    function _updateMapHighlight(stationId) {
+      Object.entries(_mapMarkers).forEach(([id, m]) => {
+        const sel = id === stationId;
+        m.setStyle({ radius: sel ? 10 : 7, fillColor: sel ? "#1a6fbb" : "#888" });
+        if (sel) m.bringToFront();
+      });
     }
 
     // ----------------------------------------------------------------
@@ -302,11 +400,7 @@
         document.getElementById("surface-temp").textContent =
           s.surface_temp_c !== null ? s.surface_temp_c : "—";
 
-        const p = s.problems || {};
-        setProblem("prob-new-snow",  p.new_snow,              "#1a6fbb");
-        setProblem("prob-wind-slab", p.wind_slab,             "#f07d00");
-        setProblem("prob-pwl",       p.persistent_weak_layer, "#c0392b");
-        setProblem("prob-wet-snow",  p.wet_snow,              "#f1c40f");
+        // (problem badges removed — see season chart for daily overview)
 
       } catch (e) {
         console.warn("Status fetch failed:", e);
@@ -689,8 +783,10 @@
       });
 
     loadStatus();
+    loadStationInfo(selectedStation());
     loadCombinedChart();
     loadAvaproStatus();
+    initMap();
     setInterval(loadStatus, 60000);
 
     // ----------------------------------------------------------------

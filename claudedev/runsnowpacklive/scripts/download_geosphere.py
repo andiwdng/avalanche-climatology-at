@@ -48,7 +48,8 @@ BASE_URL = "https://lawinen.at/smet/stm"
 NODATA = -777.0
 
 # Columns from lawinen.at that are not used by SNOWPACK and should be dropped
-_DROP_COLS = {"ISWRu", "langu", "DW_MAX", "VW_MAX"}
+# RR7 = 7-min precipitation gauge (mm7); not used — PSUM is derived from HS changes
+_DROP_COLS = {"ISWRu", "langu", "DW_MAX", "VW_MAX", "RR7"}
 _DROP_PREFIX = "slope"  # drop any column starting with "slope"
 
 
