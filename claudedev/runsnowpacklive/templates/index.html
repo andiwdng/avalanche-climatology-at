@@ -7,6 +7,20 @@
   <title>SNOWPACK Steiermark — {{ station_name }}</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    .combined-tog {
+      border: 2px solid var(--tog-color, #888);
+      color: var(--tog-color, #888);
+      background: transparent;
+      opacity: 0.4;
+      transition: opacity 0.15s, background 0.15s;
+    }
+    .combined-tog.combined-tog-on {
+      background: var(--tog-color, #888);
+      color: #fff;
+      opacity: 1;
+    }
+  </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -124,24 +138,40 @@
       </div><!-- /right col -->
     </div><!-- /row -->
 
-    <!-- Timeseries chart -->
+    <!-- Combined SMET + AVAPRO chart -->
     <div class="card mt-2">
-      <div class="card-header fw-bold">📈 Schneehöhe Saisonverlauf</div>
+      <div class="card-header fw-bold">📊 Saisonverlauf</div>
       <div class="card-body">
-        <canvas id="hs-chart" style="max-height:300px;"></canvas>
-      </div>
-    </div>
 
-  <!-- AVAPRO season timeline -->
-  <div class="card mt-2">
-    <div class="card-header fw-bold">🏔 Lawinenprobleme Saisonverlauf</div>
-    <div class="card-body p-2">
-      <canvas id="avapro-season-canvas"></canvas>
-      <div id="avapro-season-empty" class="text-muted small d-none">
-        Noch keine AVAPRO-Daten vorhanden.
+        <!-- Toggle row: Meteo variables -->
+        <div class="mb-2 d-flex flex-wrap align-items-center gap-1">
+          <small class="text-muted fw-bold me-1">Meteo:</small>
+          <button id="tog-hs"   class="btn btn-sm combined-tog combined-tog-on" style="--tog-color:#1a6fbb;" onclick="toggleMeteoLayer('hs')">❄ HS</button>
+          <button id="tog-ta"   class="btn btn-sm combined-tog" style="--tog-color:#e74c3c;" onclick="toggleMeteoLayer('ta')">🌡 TA</button>
+          <button id="tog-rh"   class="btn btn-sm combined-tog" style="--tog-color:#27ae60;" onclick="toggleMeteoLayer('rh')">💧 RH</button>
+          <button id="tog-vw"   class="btn btn-sm combined-tog" style="--tog-color:#f39c12;" onclick="toggleMeteoLayer('vw')">💨 VW</button>
+          <button id="tog-iswr" class="btn btn-sm combined-tog" style="--tog-color:#f1c40f;" onclick="toggleMeteoLayer('iswr')">☀ ISWR</button>
+        </div>
+
+        <!-- Toggle row: AVAPRO problems -->
+        <div class="mb-3 d-flex flex-wrap align-items-center gap-1">
+          <small class="text-muted fw-bold me-1">Lawinenprobleme:</small>
+          <button id="tog-new_snow"              class="btn btn-sm combined-tog combined-tog-on" style="--tog-color:#5dade2;" onclick="toggleAvaLayer('new_snow')">❄ Neuschnee</button>
+          <button id="tog-wind_slab"             class="btn btn-sm combined-tog combined-tog-on" style="--tog-color:#f39c12;" onclick="toggleAvaLayer('wind_slab')">🌬 Triebschnee</button>
+          <button id="tog-persistent_weak_layer" class="btn btn-sm combined-tog combined-tog-on" style="--tog-color:#e74c3c;" onclick="toggleAvaLayer('persistent_weak_layer')">🏔 Altschnee</button>
+          <button id="tog-deep_slab"             class="btn btn-sm combined-tog combined-tog-on" style="--tog-color:#7b241c;" onclick="toggleAvaLayer('deep_slab')">⬇ Altschnee (Tief)</button>
+          <button id="tog-wet_snow"              class="btn btn-sm combined-tog combined-tog-on" style="--tog-color:#2471a3;" onclick="toggleAvaLayer('wet_snow')">💧 Nassschnee</button>
+        </div>
+
+        <!-- Chart.js meteo chart -->
+        <div id="combined-chart-wrap" style="position:relative;">
+          <canvas id="combined-chart" style="max-height:300px;"></canvas>
+        </div>
+        <!-- AVAPRO problem bands (aligned to chart area via canvas) -->
+        <canvas id="combined-avapro-canvas" style="display:block;margin-top:3px;"></canvas>
+        <div id="combined-empty" class="text-muted small py-2 d-none">Noch keine Daten vorhanden.</div>
       </div>
     </div>
-  </div>
 
   <!-- SMET raw data section -->
   <div class="card mt-3">
@@ -203,8 +233,7 @@
 
     function onStationChange() {
       loadStatus();
-      loadChart();
-      loadAvaproSeason();
+      loadCombinedChart();
       // Reset SMET chart cache so next open reloads for the new station
       _smetLoaded = false;
       const box = document.getElementById("smet-charts-box");
@@ -332,7 +361,7 @@
           badge.innerHTML = '<span class="badge bg-secondary">' + data.status + '</span>';
         }
         await loadStatus();
-        await loadChart();
+        await loadCombinedChart();
       } catch (e) {
         console.warn("Poll failed:", e);
       }
@@ -398,133 +427,175 @@
     }
 
     // ----------------------------------------------------------------
-    // Chart
+    // Combined SMET + AVAPRO chart
     // ----------------------------------------------------------------
-    let hsChart = null;
+    let combinedChart = null;
+    let _combinedData = null;
 
-    async function loadChart() {
+    // Meteo layer definitions
+    const _METEO_LAYERS = [
+      { togKey: "hs",   dataKey: "hs_cm",    label: "HS [cm]",     color: "rgba(26,111,187,0.65)",  type: "bar",  yAxis: "yHs",   defaultOn: true  },
+      { togKey: "ta",   dataKey: "ta_c",     label: "TA [°C]",     color: "rgb(231,76,60)",         type: "line", yAxis: "yTa",   defaultOn: false },
+      { togKey: "rh",   dataKey: "rh_pct",   label: "RH [%]",      color: "rgb(39,174,96)",         type: "line", yAxis: "yRh",   defaultOn: false },
+      { togKey: "vw",   dataKey: "vw_ms",    label: "VW [m/s]",    color: "rgb(243,156,18)",        type: "line", yAxis: "yVw",   defaultOn: false },
+      { togKey: "iswr", dataKey: "iswr_wm2", label: "ISWR [W/m²]", color: "rgb(241,196,15)",        type: "line", yAxis: "yIswr", defaultOn: false },
+    ];
+
+    // AVAPRO problem definitions (no Gleitschnee; Tiefer Schnee → Altschnee (Tief))
+    const _AVA_LAYERS = [
+      { key: "new_snow",              label: "Neuschnee",        color: "#5dade2" },
+      { key: "wind_slab",             label: "Triebschnee",      color: "#f39c12" },
+      { key: "persistent_weak_layer", label: "Altschnee",        color: "#e74c3c" },
+      { key: "deep_slab",             label: "Altschnee (Tief)", color: "#7b241c" },
+      { key: "wet_snow",              label: "Nassschnee",       color: "#2471a3" },
+    ];
+
+    // Visibility state
+    const _vis = {};
+    _METEO_LAYERS.forEach(m => { _vis[m.togKey] = m.defaultOn; });
+    _AVA_LAYERS.forEach(a => { _vis[a.key] = true; });
+
+    async function loadCombinedChart() {
+      document.getElementById("combined-empty").classList.add("d-none");
       try {
-        const r = await fetch("/api/timeseries?station=" + selectedStation());
-        const data = await r.json();
-        const ctx = document.getElementById("hs-chart").getContext("2d");
-        if (hsChart) hsChart.destroy();
-        hsChart = new Chart(ctx, {
-          type: "line",
-          data: {
-            labels: data.dates || [],
-            datasets: [{
-              label: "Schneehöhe (cm)",
-              data: data.hs_cm || [],
-              borderColor: "#1a6fbb",
-              backgroundColor: "rgba(26,111,187,0.15)",
-              fill: true,
-              tension: 0.3,
-              pointRadius: 0,
-            }]
-          },
-          options: {
-            responsive: true,
-            plugins: { legend: { display: true } },
-            scales: {
-              x: { ticks: { maxTicksLimit: 12 } },
-              y: { title: { display: true, text: "HS [cm]" }, min: 0 }
-            }
-          }
-        });
+        const r = await fetch("/api/combined-chart?station=" + selectedStation());
+        _combinedData = await r.json();
+        _buildCombinedChart();
       } catch (e) {
-        console.warn("Chart load failed:", e);
+        console.warn("Combined chart load failed:", e);
       }
     }
 
-    // ----------------------------------------------------------------
-    // AVAPRO season timeline (custom canvas heatmap)
-    // ----------------------------------------------------------------
-    const _AVAPRO_PROBLEMS = [
-      { key: "new_snow",                label: "Neuschnee",     color: "#5dade2" },
-      { key: "wind_slab",               label: "Triebschnee",   color: "#f39c12" },
-      { key: "persistent_weak_layer",   label: "Altschnee",     color: "#e74c3c" },
-      { key: "deep_slab",               label: "Tiefer Schnee", color: "#922b21" },
-      { key: "wet_snow",                label: "Nassschnee",    color: "#2471a3" },
-      { key: "glide_snow",              label: "Gleitschnee",   color: "#27ae60" },
-    ];
-    const _LABEL_W = 110;   // pixels reserved for row labels on the left
-    const _ROW_H   = 22;    // height of each problem row in pixels
-    const _HDR_H   = 20;    // height of the month-label header row
-
-    async function loadAvaproSeason() {
-      const canvas = document.getElementById("avapro-season-canvas");
-      const empty  = document.getElementById("avapro-season-empty");
-      try {
-        const r = await fetch("/api/avapro-season?station=" + selectedStation());
-        const d = await r.json();
-
-        if (!d.dates || d.dates.length === 0) {
-          canvas.style.display = "none";
-          empty.classList.remove("d-none");
-          return;
-        }
-        empty.classList.add("d-none");
-        canvas.style.display = "block";
-
-        const nDays = d.dates.length;
-        // Make canvas fill the card width
-        const totalW = canvas.parentElement.clientWidth - 16;
-        const cellW  = Math.max(2, Math.floor((totalW - _LABEL_W) / nDays));
-        const drawW  = _LABEL_W + nDays * cellW;
-        const drawH  = _HDR_H + _AVAPRO_PROBLEMS.length * _ROW_H + 4;
-
-        canvas.width  = drawW;
-        canvas.height = drawH;
-        const ctx = canvas.getContext("2d");
-        ctx.clearRect(0, 0, drawW, drawH);
-
-        // --- month labels ---
-        ctx.font      = "11px system-ui, sans-serif";
-        ctx.fillStyle = "#555";
-        ctx.textAlign = "left";
-        const MONTHS_DE = ["Jan","Feb","Mär","Apr","Mai","Jun",
-                           "Jul","Aug","Sep","Okt","Nov","Dez"];
-        let lastMonth = null;
-        d.dates.forEach((dateStr, i) => {
-          const m = parseInt(dateStr.slice(5, 7), 10) - 1;
-          if (m !== lastMonth) {
-            const x = _LABEL_W + i * cellW;
-            ctx.fillText(MONTHS_DE[m], x + 2, _HDR_H - 4);
-            // tick line
-            ctx.strokeStyle = "#ccc";
-            ctx.beginPath();
-            ctx.moveTo(x, _HDR_H);
-            ctx.lineTo(x, drawH);
-            ctx.stroke();
-            lastMonth = m;
-          }
-        });
-
-        // --- problem rows ---
-        _AVAPRO_PROBLEMS.forEach((prob, rowIdx) => {
-          const y = _HDR_H + rowIdx * _ROW_H;
-
-          // row label
-          ctx.fillStyle = "#333";
-          ctx.font      = "11px system-ui, sans-serif";
-          ctx.textAlign = "right";
-          ctx.fillText(prob.label, _LABEL_W - 6, y + _ROW_H / 2 + 4);
-
-          // day cells
-          d.dates.forEach((_, i) => {
-            const active = d[prob.key][i];
-            ctx.fillStyle = active ? prob.color : "#ececec";
-            ctx.fillRect(_LABEL_W + i * cellW, y + 1, cellW - 1, _ROW_H - 2);
-          });
-        });
-
-        // border around the data area
-        ctx.strokeStyle = "#ccc";
-        ctx.strokeRect(_LABEL_W, _HDR_H, nDays * cellW, _AVAPRO_PROBLEMS.length * _ROW_H);
-
-      } catch (e) {
-        console.warn("avapro-season load failed:", e);
+    function _buildCombinedChart() {
+      const d = _combinedData;
+      const labels = d.dates || [];
+      if (!labels.length) {
+        document.getElementById("combined-empty").classList.remove("d-none");
+        document.getElementById("combined-avapro-canvas").style.display = "none";
+        return;
       }
+
+      const ctx = document.getElementById("combined-chart").getContext("2d");
+      if (combinedChart) combinedChart.destroy();
+
+      const datasets = _METEO_LAYERS.map(m => ({
+        label: m.label,
+        data: d[m.dataKey] || [],
+        borderColor: m.color,
+        backgroundColor: m.color,
+        fill: false,
+        type: m.type,
+        yAxisID: m.yAxis,
+        pointRadius: 0,
+        borderWidth: m.type === "bar" ? 0 : 1.5,
+        barPercentage: 1.0,
+        categoryPercentage: 1.0,
+        hidden: !_vis[m.togKey],
+        _togKey: m.togKey,
+      }));
+
+      combinedChart = new Chart(ctx, {
+        type: "bar",
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          animation: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: { display: false },
+          },
+          scales: {
+            x: { ticks: { maxTicksLimit: 12, font: { size: 10 } } },
+            yHs:   { type: "linear", display: _vis.hs,   position: "left",
+                     title: { display: true, text: "HS [cm]", font: { size: 10 } }, min: 0 },
+            yTa:   { type: "linear", display: _vis.ta,   position: "right",
+                     title: { display: true, text: "TA [°C]", font: { size: 10 } },
+                     grid: { drawOnChartArea: false } },
+            yRh:   { type: "linear", display: false, min: 0, max: 100 },
+            yVw:   { type: "linear", display: false, min: 0 },
+            yIswr: { type: "linear", display: false, min: 0 },
+          },
+        },
+      });
+
+      // Draw AVAPRO bands after Chart.js finishes rendering
+      setTimeout(_drawAvaproBands, 80);
+    }
+
+    function _drawAvaproBands() {
+      const canvas = document.getElementById("combined-avapro-canvas");
+      if (!combinedChart || !_combinedData) { canvas.style.display = "none"; return; }
+
+      const d = _combinedData;
+      const nDays = (d.dates || []).length;
+      if (!nDays) { canvas.style.display = "none"; return; }
+
+      const ca = combinedChart.chartArea;
+      if (!ca) { canvas.style.display = "none"; return; }
+
+      const visible = _AVA_LAYERS.filter(a => _vis[a.key]);
+      if (!visible.length) { canvas.style.display = "none"; return; }
+
+      const ROW_H   = 22;
+      const labelW  = ca.left;          // align label area to chart's left margin
+      const dataW   = ca.right - ca.left;
+      const cellW   = dataW / nDays;
+      const totalW  = Math.ceil(ca.right);
+      const totalH  = visible.length * ROW_H + 2;
+
+      canvas.width  = totalW;
+      canvas.height = totalH;
+      canvas.style.display = "block";
+      canvas.style.width   = totalW + "px";
+
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, totalW, totalH);
+
+      visible.forEach((prob, rowIdx) => {
+        const y = rowIdx * ROW_H + 1;
+
+        // row label
+        ctx.font      = "10px system-ui, sans-serif";
+        ctx.fillStyle = "#444";
+        ctx.textAlign = "right";
+        ctx.fillText(prob.label, labelW - 4, y + ROW_H / 2 + 3);
+
+        // day cells
+        d.dates.forEach((_, i) => {
+          const active = d[prob.key] && d[prob.key][i];
+          ctx.fillStyle = active ? prob.color : "#ececec";
+          ctx.fillRect(ca.left + i * cellW, y, cellW - 0.5, ROW_H - 2);
+        });
+
+        // row border
+        ctx.strokeStyle = "#ccc";
+        ctx.strokeRect(ca.left, y, nDays * cellW, ROW_H - 2);
+      });
+    }
+
+    function toggleMeteoLayer(togKey) {
+      _vis[togKey] = !_vis[togKey];
+      const btn = document.getElementById("tog-" + togKey);
+      if (btn) btn.classList.toggle("combined-tog-on", _vis[togKey]);
+      if (!combinedChart) return;
+
+      combinedChart.data.datasets.forEach(ds => {
+        if (ds._togKey === togKey) ds.hidden = !_vis[togKey];
+      });
+      const axisMap = { hs: "yHs", ta: "yTa", rh: "yRh", vw: "yVw", iswr: "yIswr" };
+      if (axisMap[togKey]) {
+        combinedChart.options.scales[axisMap[togKey]].display = _vis[togKey];
+      }
+      combinedChart.update();
+      setTimeout(_drawAvaproBands, 50);
+    }
+
+    function toggleAvaLayer(avaKey) {
+      _vis[avaKey] = !_vis[avaKey];
+      const btnId = "tog-" + avaKey;
+      const btn = document.getElementById(btnId);
+      if (btn) btn.classList.toggle("combined-tog-on", _vis[avaKey]);
+      _drawAvaproBands();
     }
 
     // ----------------------------------------------------------------
@@ -536,8 +607,7 @@
       });
 
     loadStatus();
-    loadChart();
-    loadAvaproSeason();
+    loadCombinedChart();
     loadAvaproStatus();
     setInterval(loadStatus, 60000);
 

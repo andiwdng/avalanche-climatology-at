@@ -379,6 +379,93 @@ def api_avapro_status():
     return jsonify({"avapro_enabled": avapro_enabled})
 
 
+@app.route("/api/combined-chart")
+def api_combined_chart():
+    """
+    Daily-aggregated SMET data + daily AVAPRO problem flags for the combined chart.
+
+    SMET is aggregated from 10-min to daily:
+      HS  → daily maximum (peak snow height)
+      TA  → daily mean minus 273.15 (°C)
+      RH  → daily mean × 100 (%)
+      VW  → daily mean (m/s)
+      ISWR→ daily mean (W/m²)
+
+    AVAPRO problems (4 assessments/day) are reduced to daily any().
+    Glide snow is excluded; deep slab is relabelled client-side.
+    """
+    import pandas as pd
+    import numpy as np
+    station = _get_station(request.args.get("station"))
+
+    result = {k: [] for k in ["dates", "hs_cm", "ta_c", "rh_pct",
+                               "vw_ms", "iswr_wm2", "new_snow",
+                               "wind_slab", "persistent_weak_layer",
+                               "deep_slab", "wet_snow"]}
+
+    # --- SMET daily aggregation ---
+    smet_path = (Path(config["paths"]["data"]) / "smet"
+                 / f"{station['snow_station']}.smet")
+    smet_dates = []
+    if smet_path.exists():
+        try:
+            from scripts.smet_writer import SmetWriter
+            writer = SmetWriter(config, station)
+            df = writer._read_smet_data(smet_path)
+            if not df.empty:
+                df["date"] = df["timestamp"].dt.date
+
+                def _agg(col, fn):
+                    if col not in df.columns:
+                        return pd.Series(dtype=float)
+                    return df.groupby("date")[col].apply(fn)
+
+                hs  = _agg("HS",   lambda x: x.max() * 100)
+                ta  = _agg("TA",   lambda x: x.mean() - 273.15)
+                rh  = _agg("RH",   lambda x: x.mean() * 100)
+                vw  = _agg("VW",   lambda x: x.mean())
+                iswr= _agg("ISWR", lambda x: x.mean())
+
+                daily = pd.DataFrame({"hs_cm": hs, "ta_c": ta, "rh_pct": rh,
+                                      "vw_ms": vw, "iswr_wm2": iswr})
+                daily = daily.reset_index().rename(columns={"index": "date"})
+                smet_dates = list(daily["date"])
+
+                def _clean(s):
+                    return [None if (v is None or (isinstance(v, float) and np.isnan(v)))
+                            else round(v, 1) for v in s]
+
+                result["dates"]    = [str(d) for d in smet_dates]
+                result["hs_cm"]    = _clean(daily["hs_cm"])
+                result["ta_c"]     = _clean(daily["ta_c"])
+                result["rh_pct"]   = _clean(daily["rh_pct"])
+                result["vw_ms"]    = _clean(daily["vw_ms"])
+                result["iswr_wm2"] = _clean(daily["iswr_wm2"])
+        except Exception as exc:
+            logger.warning("combined-chart SMET aggregation failed: %s", exc)
+
+    # --- AVAPRO daily problems aligned to SMET dates ---
+    csv_path = (Path(config["paths"]["data"]) / "avapro_output"
+                / f"{station['id'].lower()}_problems.csv")
+    if csv_path.exists() and smet_dates:
+        try:
+            import datetime as _dt
+            adf = pd.read_csv(csv_path)
+            adf["date"] = pd.to_datetime(adf["date"]).dt.date
+            probs = ["new_snow", "wind_slab", "persistent_weak_layer",
+                     "deep_slab", "wet_snow"]
+            daily_ava = adf.groupby("date")[probs].any()
+            for p in probs:
+                result[p] = [
+                    bool(daily_ava.loc[d, p]) if d in daily_ava.index else False
+                    for d in smet_dates
+                ]
+        except Exception as exc:
+            logger.warning("combined-chart AVAPRO merge failed: %s", exc)
+
+    return jsonify(result)
+
+
 @app.route("/api/avapro-season")
 def api_avapro_season():
     """
