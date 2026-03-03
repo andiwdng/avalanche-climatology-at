@@ -195,11 +195,32 @@
   <div class="card mt-3">
     <div class="card-header fw-bold d-flex justify-content-between align-items-center">
       <span>📊 SMET Rohdaten — Meteostation</span>
-      <button class="btn btn-sm btn-outline-primary" onclick="toggleSmetCharts()">
-        Daten anzeigen / verbergen
-      </button>
+      <div class="d-flex gap-2">
+        <button id="btn-filtercomp" class="btn btn-sm btn-outline-secondary d-none"
+                onclick="toggleFilterComp()" title="Sensor-Rohwerte und MeteoIO-Ausgabe einblenden">
+          Filtervergleich
+        </button>
+        <button class="btn btn-sm btn-outline-primary" onclick="toggleSmetCharts()">
+          Daten anzeigen / verbergen
+        </button>
+      </div>
     </div>
     <div id="smet-charts-box" class="card-body d-none">
+      <!-- Filter comparison legend (hidden until toggle is active) -->
+      <div id="filtercomp-legend" class="d-none mb-2 small">
+        <span class="me-3">
+          <span style="display:inline-block;width:24px;height:3px;background:rgba(160,160,160,0.9);border-top:2px dashed rgba(130,130,130,0.9);vertical-align:middle;"></span>
+          Sensor (roh, vor Python-Filter)
+        </span>
+        <span class="me-3">
+          <span style="display:inline-block;width:24px;height:2px;background:rgb(26,111,187);vertical-align:middle;"></span>
+          SMET (nach Python-Filter)
+        </span>
+        <span>
+          <span style="display:inline-block;width:24px;height:2px;background:rgb(10,50,120);vertical-align:middle;"></span>
+          SNOWPACK-Eingabe (nach MeteoIO-Filter)
+        </span>
+      </div>
       <div id="smet-loading" class="text-center text-muted py-3">
         <div class="spinner-border spinner-border-sm me-2"></div>
         Lade SMET-Daten…
@@ -260,9 +281,12 @@
       loadCombinedChart();
       // Reset SMET chart cache so next open reloads for the new station
       _smetLoaded = false;
+      _filterCompData = null;  // force reload of filter comp data for new station
       const box = document.getElementById("smet-charts-box");
       if (!box.classList.contains("d-none")) {
-        loadSmetCharts();
+        loadSmetCharts().then(() => {
+          if (_filterCompVis) _loadFilterCompData().then(_applyFilterCompOverlay);
+        });
       }
     }
 
@@ -865,9 +889,117 @@
     async function toggleSmetCharts() {
       const box = document.getElementById("smet-charts-box");
       box.classList.toggle("d-none");
-      if (!box.classList.contains("d-none") && !_smetLoaded) {
+      const hidden = box.classList.contains("d-none");
+      document.getElementById("btn-filtercomp").classList.toggle("d-none", hidden);
+      if (!hidden && !_smetLoaded) {
         await loadSmetCharts();
       }
+    }
+
+    // ----------------------------------------------------------------
+    // Filter comparison overlay  (raw CSV  ↔  SMET  ↔  forcing.smet)
+    // ----------------------------------------------------------------
+    let _filterCompData  = null;   // { raw: {...}, forcing: {...} }
+    let _filterCompVis   = false;
+
+    async function toggleFilterComp() {
+      _filterCompVis = !_filterCompVis;
+      const btn = document.getElementById("btn-filtercomp");
+      btn.classList.toggle("btn-secondary",         _filterCompVis);
+      btn.classList.toggle("btn-outline-secondary", !_filterCompVis);
+      document.getElementById("filtercomp-legend").classList.toggle("d-none", !_filterCompVis);
+
+      // Ensure charts are loaded first
+      if (!_smetLoaded) {
+        document.getElementById("smet-charts-box").classList.remove("d-none");
+        document.getElementById("btn-filtercomp").classList.remove("d-none");
+        await loadSmetCharts();
+      }
+
+      if (_filterCompVis && !_filterCompData) {
+        await _loadFilterCompData();
+      }
+      _applyFilterCompOverlay();
+    }
+
+    async function _loadFilterCompData() {
+      const sid = selectedStation();
+      try {
+        const [rr, fr] = await Promise.all([
+          fetch("/api/raw-data?station="     + sid),
+          fetch("/api/forcing-data?station=" + sid),
+        ]);
+        _filterCompData = { raw: await rr.json(), forcing: await fr.json() };
+      } catch (e) {
+        console.warn("Filter comp data load failed:", e);
+        _filterCompData = null;
+      }
+    }
+
+    // Align source time-series to the chart's label array.
+    // Returns one value per label (null if not found).
+    function _alignSeries(srcDates, srcValues, targetLabels) {
+      const map = new Map();
+      (srcDates || []).forEach((d, i) => {
+        map.set(d.replace("T", " ").slice(0, 16), srcValues[i]);
+      });
+      return targetLabels.map(lbl => {
+        const v = map.get(lbl.slice(0, 16));
+        return (v !== undefined) ? v : null;
+      });
+    }
+
+    function _applyFilterCompOverlay() {
+      const MARK = "_isFilterComp";
+
+      function _patchChart(chartId, rawKey, rawLabel, rawColor, forceKey, forceLabel) {
+        const chart = _smetCharts[chartId];
+        if (!chart) return;
+        // Remove previously added overlay datasets
+        chart.data.datasets = chart.data.datasets.filter(d => !d[MARK]);
+
+        if (_filterCompVis && _filterCompData) {
+          const labels = chart.data.labels;
+
+          // Raw trace — prepend so it renders behind
+          const rawVals = _alignSeries(
+            _filterCompData.raw.dates, _filterCompData.raw[rawKey], labels);
+          if (rawVals.some(v => v !== null)) {
+            chart.data.datasets.unshift({
+              label: rawLabel,
+              data: rawVals,
+              borderColor: rawColor,
+              backgroundColor: "transparent",
+              fill: false, pointRadius: 0, borderWidth: 1.2,
+              borderDash: [5, 4], tension: 0.1,
+              [MARK]: true,
+            });
+          }
+
+          // Forcing trace — append so it renders on top
+          if (forceKey) {
+            const forceVals = _alignSeries(
+              _filterCompData.forcing.dates, _filterCompData.forcing[forceKey], labels);
+            if (forceVals.some(v => v !== null)) {
+              chart.data.datasets.push({
+                label: forceLabel,
+                data: forceVals,
+                borderColor: "rgb(10,50,120)",
+                backgroundColor: "transparent",
+                fill: false, pointRadius: 0, borderWidth: 1.5,
+                tension: 0.1,
+                [MARK]: true,
+              });
+            }
+          }
+        }
+        chart.update();
+      }
+
+      _patchChart("smet-hs", "hs_cm", "HS Sensor (roh)",
+                  "rgba(150,150,150,0.85)", "hs_cm", "HS SNOWPACK-Eingabe");
+      _patchChart("smet-ta", "ta_c",  "TA Sensor (roh)",
+                  "rgba(220,120,100,0.6)",  null,    null);
     }
   </script>
 

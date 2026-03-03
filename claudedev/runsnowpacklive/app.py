@@ -544,6 +544,111 @@ def api_stations():
     ])
 
 
+@app.route("/api/raw-data")
+def api_raw_data():
+    """
+    Raw (pre-filter) sensor data — what lawinen.at delivered before any
+    Python processing (Föhn spike filter, gap fill, TSS clip, etc.).
+    """
+    import pandas as pd
+    station = _get_station(request.args.get("station"))
+    raw_csv = (Path(config["paths"]["data"]) / "smet"
+               / f"{station['id'].lower()}_raw.csv")
+    empty = {"dates": [], "hs_cm": [], "ta_c": []}
+    if not raw_csv.exists():
+        return jsonify(empty)
+    try:
+        df = pd.read_csv(raw_csv)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        df = (df.dropna(subset=["timestamp"])
+                .drop_duplicates("timestamp")
+                .sort_values("timestamp")
+                .reset_index(drop=True))
+        NODATA = -777.0
+
+        def _col(name, fn):
+            if name not in df.columns:
+                return [None] * len(df)
+            out = []
+            for v in df[name]:
+                try:
+                    fv = float(v)
+                    out.append(None if (fv == NODATA or fv != fv) else round(fn(fv), 2))
+                except (TypeError, ValueError):
+                    out.append(None)
+            return out
+
+        return jsonify({
+            "dates":  df["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ").tolist(),
+            "hs_cm":  _col("HS", lambda v: v * 100.0),
+            "ta_c":   _col("TA", lambda v: v - 273.15),
+        })
+    except Exception as exc:
+        logger.error("raw-data error: %s", exc)
+        return jsonify(empty)
+
+
+@app.route("/api/forcing-data")
+def api_forcing_data():
+    """
+    MeteoIO-processed data — what SNOWPACK actually received after all
+    MeteoIO filters (rate, MAD, min/max, resampling).
+    Written by SNOWPACK as {snow_station}_{station_id}_forcing.smet.
+    """
+    station = _get_station(request.args.get("station"))
+    pro_dir = Path(config["paths"]["data"]) / "pro"
+    forcing_path = (pro_dir
+                    / f"{station['snow_station']}_{station['id']}_forcing.smet")
+    empty = {"dates": [], "hs_cm": [], "ta_c": []}
+    if not forcing_path.exists():
+        return jsonify(empty)
+    try:
+        fields: list[str] = []
+        rows: list[list[str]] = []
+        in_data = False
+        with open(forcing_path) as fh:
+            for line in fh:
+                s = line.strip()
+                if s.startswith("fields"):
+                    _, _, rhs = s.partition("=")
+                    fields = rhs.strip().split()
+                elif s == "[DATA]":
+                    in_data = True
+                elif in_data and s:
+                    parts = s.split()
+                    if len(parts) == len(fields):
+                        rows.append(parts)
+        if not fields or not rows:
+            return jsonify(empty)
+
+        fi = {f: i for i, f in enumerate(fields)}
+        NODATA = -999.0
+
+        def _val(row, name, fn):
+            idx = fi.get(name)
+            if idx is None:
+                return None
+            try:
+                v = float(row[idx])
+                return None if v == NODATA else round(fn(v), 2)
+            except (ValueError, IndexError):
+                return None
+
+        dates, hs_cm, ta_c = [], [], []
+        for row in rows:
+            ts = row[0]
+            if not ts.endswith("Z"):
+                ts = ts + "Z"
+            dates.append(ts)
+            hs_cm.append(_val(row, "HS", lambda v: v * 100.0))
+            ta_c.append(_val(row, "TA", lambda v: v - 273.15))
+
+        return jsonify({"dates": dates, "hs_cm": hs_cm, "ta_c": ta_c})
+    except Exception as exc:
+        logger.error("forcing-data error: %s", exc)
+        return jsonify(empty)
+
+
 @app.route("/pro/download")
 def pro_download():
     station = _get_station(request.args.get("station"))
