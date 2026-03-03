@@ -111,6 +111,7 @@ def _run_station(config: dict, station: dict, args: argparse.Namespace) -> bool:
     logger.info("  INI: %s", ini_path)
 
     # --- 4. SNOWPACK ---
+    snowpack_ok = True
     if not args.skip_snowpack:
         logger.info("Stage 4: Running SNOWPACK")
         from scripts.snowpack_runner import SnowpackRunner, run_snowpack
@@ -118,9 +119,10 @@ def _run_station(config: dict, station: dict, args: argparse.Namespace) -> bool:
         if not runner.check_binary():
             logger.error("  SNOWPACK binary not found: %s", config["snowpack"]["binary"])
             logger.error("  Adjust snowpack.binary in config.yaml and retry.")
+            snowpack_ok = False
         else:
-            success, log_path = run_snowpack(config, station, ini_path, end_date)
-            if success:
+            snowpack_ok, log_path = run_snowpack(config, station, ini_path, end_date)
+            if snowpack_ok:
                 logger.info("  SNOWPACK OK. Log: %s", log_path)
             else:
                 logger.error("  SNOWPACK FAILED. Log: %s", log_path)
@@ -128,7 +130,7 @@ def _run_station(config: dict, station: dict, args: argparse.Namespace) -> bool:
         logger.info("Stage 4: SNOWPACK skipped.")
 
     # --- 5. Classify (AVAPRO) ---
-    if not args.skip_classify:
+    if not args.skip_classify and snowpack_ok:
         logger.info("Stage 5: Running AVAPRO avalanche problem classification")
         from scripts.avapro_runner import run_avapro
         # PRO file is named {snow_station}_{EXPERIMENT}.pro = {snow_station}_{station_id}.pro

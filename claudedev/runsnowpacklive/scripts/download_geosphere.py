@@ -16,10 +16,12 @@ Strategy:
 Field renames applied after fetching:
   - ISWR2  → ISWR  (only when ISWR not already present)
   - lango  → ILWR
-  - tg     → TSS   (snow surface temperature, raw Celsius; SmetWriter converts to K)
-  - TSG    → TSS   (same sensor, old field name; dropped when both TSG and tg exist)
+  - TSG    → TSS   (snow surface temperature, raw Celsius; SmetWriter converts to K)
+  - tg            dropped (different sensor, NOT snow surface temperature)
+  - RR7    → PSUM  (7-min rain gauge, mm/7min; only when station["psum"] is True)
 
 Unused columns dropped: ISWRu, langu, slope1* etc.
+RR7 is dropped for stations without psum:true (default HS-derived precipitation).
 
 URLs:
   winter/{ID}*.smet.gz — full season from ~September (updated weekly)
@@ -49,8 +51,8 @@ BASE_URL = "https://lawinen.at/smet/stm"
 NODATA = -777.0
 
 # Columns from lawinen.at that are not used by SNOWPACK and should be dropped
-# RR7 = 7-min precipitation gauge (mm7); not used — PSUM is derived from HS changes
-_DROP_COLS = {"ISWRu", "langu", "DW_MAX", "VW_MAX", "RR7"}
+# RR7 = 7-min precipitation gauge (mm/7min); kept for stations with psum:true
+_DROP_COLS = {"ISWRu", "langu", "DW_MAX", "VW_MAX"}
 _DROP_PREFIX = "slope"  # drop any column starting with "slope"
 
 
@@ -188,9 +190,12 @@ class GeoSphereDownloader:
         Renames:
           ISWR2  → ISWR   (only when ISWR not already present)
           lango  → ILWR
-          tg     → TSG    (stays in Celsius; SmetWriter converts to K)
+          TSG    → TSS    (snow surface temp, mislabelled as ground temp; SmetWriter converts C→K)
+          RR7    → PSUM   (7-min rain gauge, only when station["psum"] is True)
 
         Drops: ISWRu, langu, DW_MAX, VW_MAX, slope1* …
+               tg  (different sensor, not snow surface temperature)
+               RR7 also dropped for stations without psum:true
         """
         if df.empty:
             return df
@@ -204,15 +209,22 @@ class GeoSphereDownloader:
         if "lango" in df.columns:
             df = df.rename(columns={"lango": "ILWR"})
 
-        # TSG and tg are both snow surface temperature (mislabelled as ground temp).
-        # Rename to TSS. New SMET format will deliver TSS directly.
-        if "tg" in df.columns:
-            # Drop the pre-labelled TSG when both exist (tg is the better column)
-            if "TSG" in df.columns:
-                df = df.drop(columns=["TSG"])
-            df = df.rename(columns={"tg": "TSS"})
-        elif "TSG" in df.columns:
+        # TSG = snow surface temperature (Celsius, mislabelled as ground temp) → rename to TSS.
+        # tg  = a different sensor (NOT snow surface temperature) → drop.
+        if "TSG" in df.columns:
             df = df.rename(columns={"TSG": "TSS"})
+        if "tg" in df.columns:
+            df = df.drop(columns=["tg"])
+
+        # RR7 / PINT7: 7-min rain gauge (mm/7min or mm/h7) — same physical sensor,
+        # lawinen.at renamed it from PINT7 to RR7 in winter 2025/26.
+        # Rename to PSUM for stations with a gauge; drop for all others.
+        gauge_col = next((c for c in ("RR7", "PINT7") if c in df.columns), None)
+        if gauge_col:
+            if self._station.get("psum"):
+                df = df.rename(columns={gauge_col: "PSUM"})
+            else:
+                df = df.drop(columns=[gauge_col])
 
         # Drop unused columns
         drop = [c for c in df.columns
@@ -286,20 +298,26 @@ class GeoSphereDownloader:
         logger.info("Fetching %s+%s from lawinen.at/smet/stm/%s/",
                     station["wind_station"], station["snow_station"], source)
 
-        url1 = f"{BASE_URL}/{source}/{station['wind_station']}.smet.gz"
         url2 = f"{BASE_URL}/{source}/{station['snow_station']}.smet.gz"
-
-        df1 = self._fetch_smet_gz(url1)
         df2 = self._fetch_smet_gz(url2)
+
+        # Single-station config: wind and snow are the same physical station.
+        # Skip the duplicate fetch; VW/DW are already in the snow station data.
+        if station["wind_station"] == station["snow_station"]:
+            df1 = pd.DataFrame()
+            logger.info("%s: single-station, %d rows",
+                        station["snow_station"], len(df2))
+        else:
+            url1 = f"{BASE_URL}/{source}/{station['wind_station']}.smet.gz"
+            df1 = self._fetch_smet_gz(url1)
+            logger.info("%s: %d rows, %s: %d rows",
+                        station["wind_station"], len(df1),
+                        station["snow_station"], len(df2))
 
         if df1.empty and df2.empty:
             logger.error("Both %s and %s returned empty data.",
                          station["wind_station"], station["snow_station"])
             return pd.DataFrame()
-
-        logger.info("%s: %d rows, %s: %d rows",
-                    station["wind_station"], len(df1),
-                    station["snow_station"], len(df2))
 
         # Apply field renames to snow station data
         df2 = self._apply_field_renames(df2)

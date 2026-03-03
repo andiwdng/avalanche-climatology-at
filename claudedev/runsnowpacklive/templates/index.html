@@ -87,19 +87,15 @@
               </div>
               <div class="col-6">
                 <div class="text-muted mb-1">Schneemessstation</div>
-                <div><code id="si-snow">—</code> <span class="text-muted small">(TA, RH, HS, ISWR…)</span></div>
+                <div><code id="si-snow">—</code></div>
               </div>
               <div class="col-6">
                 <div class="text-muted mb-1">Windmessstation</div>
-                <div><code id="si-wind">—</code> <span class="text-muted small">(VW, DW)</span></div>
+                <div><code id="si-wind">—</code></div>
               </div>
-              <div class="col-6">
-                <div class="text-muted mb-1">ILWR</div>
-                <div id="si-ilwr">—</div>
-              </div>
-              <div class="col-6">
-                <div class="text-muted mb-1">TSG Boden</div>
-                <div id="si-tsg">—</div>
+              <div class="col-12 mt-1">
+                <div class="text-muted mb-1">Variablen für SNOWPACK</div>
+                <div id="si-vars" class="small" style="line-height:1.6"></div>
               </div>
             </div>
           </div>
@@ -281,12 +277,26 @@
       document.getElementById("si-alt").textContent   = s.altitude + " m ü.A.";
       document.getElementById("si-coord").textContent =
         s.latitude.toFixed(5) + "°N,  " + s.longitude.toFixed(5) + "°E";
-      document.getElementById("si-snow").textContent  = s.snow_station;
-      document.getElementById("si-wind").textContent  = s.wind_station;
-      document.getElementById("si-ilwr").textContent  =
-        s.ilwr ? "gemessen (lango → ILWR)" : "berechnet (ALLSKY_LW)";
-      document.getElementById("si-tsg").textContent   =
-        s.tsg ? "gemessen (tg → TSG)" : "Konstante 0 °C";
+      document.getElementById("si-snow").textContent = s.snow_station;
+      // Show wind station only when different from snow station
+      const windEl = document.getElementById("si-wind");
+      windEl.textContent = (s.wind_station && s.wind_station !== s.snow_station)
+        ? s.wind_station : s.snow_station + " (einzel)";
+
+      // Build simulation variable list
+      const vars = [
+        `<span class="text-success">✓</span> TA, RH, VW, DW, HS — gemessen`,
+        `<span class="${s.ilwr ? 'text-success' : 'text-warning'}">
+          ${s.ilwr ? '✓' : '~'}</span> ISWR — ${s.ilwr ? 'gemessen' : 'gemessen (ALLSKY_SW Fallback)'}`,
+        `<span class="${s.ilwr ? 'text-success' : 'text-warning'}">
+          ${s.ilwr ? '✓' : '~'}</span> ILWR — ${s.ilwr ? 'gemessen (lango)' : 'berechnet (ALLSKY_LW)'}`,
+        `<span class="${s.psum ? 'text-success' : 'text-warning'}">
+          ${s.psum ? '✓' : '~'}</span> PSUM — ${s.psum ? 'gemessen (RR7-Regen­messgerät)' : 'abgeleitet aus ΔHS (kein Regen­sensor)'}`,
+        `<span class="${s.tss ? 'text-success' : 'text-muted'}">
+          ${s.tss ? '✓' : '—'}</span> TSS — ${s.tss ? 'gemessen (Schneeoberfl.-Temp.)' : 'nicht verfügbar'}`,
+        `<span class="text-muted">—</span> TSG — Konstante 273.15 K (0 °C Boden)`,
+      ];
+      document.getElementById("si-vars").innerHTML = vars.join("<br>");
     }
 
     // ----------------------------------------------------------------
@@ -625,6 +635,10 @@
           responsive: true,
           animation: false,
           interaction: { mode: "index", intersect: false },
+          layout: {
+            // Extra left padding so ca.left is wide enough for AVAPRO labels below
+            padding: { left: 70 },
+          },
           plugins: {
             legend: { display: false },
           },

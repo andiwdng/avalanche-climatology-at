@@ -9,7 +9,7 @@ stations:
     longitude: 14.717084
     altitude: 1425
     ilwr: false
-    tss: false   # no TSS sensor; set true when lawinen.at delivers TSS field
+    tss: true    # TSG field from lawinen.at is actually TSS; rename handled in downloader
 
   - id: LOSE
     name: "Altaussee Loser"
@@ -19,7 +19,7 @@ stations:
     longitude: 13.784403
     altitude: 1573
     ilwr: true
-    tss: false   # set true when lawinen.at delivers TSS field
+    tss: true    # tg field from lawinen.at is actually TSS
 
   - id: VEIT
     name: "Veitsch"
@@ -29,7 +29,7 @@ stations:
     longitude: 15.420722
     altitude: 1323
     ilwr: true
-    tss: false   # set true when lawinen.at delivers TSS field
+    tss: true    # tg field from lawinen.at is actually TSS
 
   - id: PLAN
     name: "Planneralm"
@@ -39,7 +39,7 @@ stations:
     longitude: 14.193223
     altitude: 1707
     ilwr: false
-    tss: false   # set true when lawinen.at delivers TSS field
+    tss: true    # TSG field from lawinen.at is actually TSS
 
   - id: GRBU
     name: "Großer Buchstein"
@@ -49,7 +49,38 @@ stations:
     longitude: 14.60422
     altitude: 2089
     ilwr: true
-    tss: false   # set true when lawinen.at delivers TSS field
+    tss: true    # tg field from lawinen.at is actually TSS
+    psum: true   # RR7/PINT7 = 7-min rain gauge; use as measured PSUM
+
+  - id: LAWI
+    name: "Tauplitz Lawinenstein"
+    snow_station: LAWI2
+    wind_station: LAWI1
+    latitude: 47.59735
+    longitude: 13.954379
+    altitude: 1959
+    ilwr: false   # no radiation sensor; ALLSKY_SW + ALLSKY_LW generated
+    tss: true    # TSG field from lawinen.at is actually TSS
+
+  - id: GAMS
+    name: "Gamsfeld"
+    snow_station: GAMS1
+    wind_station: GAMS1  # single station; VW/DW already in snow station
+    latitude: 47.449833
+    longitude: 13.645167
+    altitude: 2520
+    ilwr: false   # no ILWR sensor; ALLSKY_LW generated
+    tss: false   # TSS sensor reports >40% impossible values (<220K/-53°C); disabled
+
+  - id: PORI
+    name: "Polster Rinne"
+    snow_station: PORI1
+    wind_station: PORI1  # single station; VW/DW already in snow station
+    latitude: 47.531306
+    longitude: 14.957215
+    altitude: 1731
+    ilwr: false   # no ILWR sensor; ALLSKY_LW generated
+    tss: true    # TSG field from lawinen.at is actually TSS
 
 # backward-compat alias (used by git_sync, old code)
 station:

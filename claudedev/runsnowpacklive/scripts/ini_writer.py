@@ -89,12 +89,12 @@ ILWR::arg1::MAX    =    600
 TSS::filter1       =    min_max
 TSS::arg1::SOFT    =    TRUE
 TSS::arg1::MIN     =    210
-TSS::arg1::MAX     =    280
+TSS::arg1::MAX     =    273.15
 """
         tss_resample_lines = """\
 TSS::resample                  =    linear
 TSS::linear::window_size       =    864000
-TSS::linear::extrapolate       =    true
+TSS::linear::extrapolate       =    false
 """
 
     content = f"""\

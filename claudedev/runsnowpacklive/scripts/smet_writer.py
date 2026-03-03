@@ -9,7 +9,8 @@ Supports per-station field configuration:
 
 TSS (snow surface temperature) from lawinen.at is in Celsius; converted to
 Kelvin with the rule: if value < 200: value_K = value + 273.15
-Valid range after conversion: 200–274 K (snow surface ≤ 0 °C).
+Valid range after conversion: 210–273.15 K (snow surface ≤ 0 °C).
+Values at the lower clip floor (exactly 210 K) are blanked as sensor errors.
 
 TSG (ground surface temperature, SNOWPACK bottom boundary) is always generated
 as a 273.15 K constant by MeteoIO — never read from sensor data.
@@ -68,14 +69,14 @@ class SmetWriter:
         Convert raw lawinen.at DataFrame to SNOWPACK SMET format.
 
         Source data already uses SNOWPACK-native field names and units for most
-        fields. ILWR and TSG need clipping/conversion; everything else just
-        needs NaN → nodata fill.
+        fields. ILWR and TSS need clipping/conversion; PSUM is from measured
+        gauge (RR7) when available; everything else just needs NaN → nodata fill.
 
         Parameters
         ----------
         df : pd.DataFrame
             Raw data with at minimum: [timestamp, TA, RH, VW, DW, ISWR, HS].
-            May also contain ILWR and/or TSG (Celsius) depending on station.
+            May also contain ILWR, TSS (Celsius), and/or PSUM depending on station.
 
         Returns
         -------
@@ -103,9 +104,16 @@ class SmetWriter:
             ilwr = ilwr.where(ilwr.isna() | (ilwr >= 50), np.nan)
             out["ILWR"] = safe(ilwr.clip(lower=0).round(6))
 
-        # PSUM/PSUM_PH: always nodata — SNOWPACK derives precipitation from HS
-        # changes internally when ENFORCE_MEASURED_SNOW_HEIGHTS = TRUE.
-        out["PSUM"]    = -999.0
+        # PSUM: use measured gauge (RR7→PSUM) when available; otherwise nodata
+        # so SNOWPACK derives precipitation from HS changes.
+        # PSUM_PH: always nodata — SNOWPACK uses THRESH_RAIN (TA-based phase detection).
+        if self._station.get("psum") and "PSUM" in df.columns:
+            psum_raw = df["PSUM"].copy()
+            # Gauge can report tiny negatives due to sensor noise; clip to 0
+            psum_raw = psum_raw.clip(lower=0.0)
+            out["PSUM"] = safe(psum_raw.round(4))
+        else:
+            out["PSUM"] = -999.0
         out["PSUM_PH"] = -999.0
 
         hs = df["HS"].copy() if "HS" in df.columns else pd.Series(np.nan, index=df.index)
@@ -115,8 +123,8 @@ class SmetWriter:
             tss_raw = df["TSS"].copy() if "TSS" in df.columns else pd.Series(np.nan, index=df.index)
             # Convert Celsius → Kelvin for values that look like Celsius
             tss_raw = tss_raw.where(tss_raw.isna() | (tss_raw >= 200), tss_raw + 273.15)
-            # Clip to plausible range; MeteoIO SOFT filter removes outliers
-            tss_raw = tss_raw.clip(lower=210, upper=280)
+            # Clip to plausible range: snow surface cannot exceed 0 °C = 273.15 K
+            tss_raw = tss_raw.clip(lower=210, upper=273.15)
             out["TSS"] = safe(tss_raw.round(4))
 
         return out
@@ -250,9 +258,12 @@ class SmetWriter:
         ILWR       : linear interpolation, clipped >= 0 (up to 10 days)
         VW         : forward-fill, fallback 2.0 m/s
         DW         : forward-fill, fallback 180 deg
-        HS         : forward-fill only (carry snow height, never interpolate)
-        TSS        : linear interpolation (up to 2 days), clipped 200–274 K
-        PSUM/PH    : always nodata (SNOWPACK derives from delta-HS)
+        HS         : Föhn-spike filter first (blank increases when TA > +2°C),
+                     then forward-fill only (carry snow height, never interpolate)
+        TSS        : values at 210 K clip-floor or above 273.15 K blanked first,
+                     then linear interpolation (up to 2 days)
+        PSUM       : fillna(0) for gauge stations (gap = no rain); nodata otherwise
+        PSUM_PH    : always nodata (SNOWPACK uses THRESH_RAIN / TA-based detection)
         """
         if df.empty:
             return df
@@ -266,6 +277,9 @@ class SmetWriter:
         for col in ["TA", "RH"]:
             if col in idx.columns:
                 idx[col] = idx[col].interpolate(method="time", limit=limit)
+        # RH must be > 0 (MeteoIO Sun module rejects RH ≤ 0 when generating ISWR/ILWR)
+        if "RH" in idx.columns:
+            idx["RH"] = idx["RH"].clip(lower=0.01)
 
         if "ISWR" in idx.columns:
             idx["ISWR"] = idx["ISWR"].interpolate(method="time", limit=limit).clip(lower=0.0)
@@ -284,14 +298,66 @@ class SmetWriter:
             idx["DW"] = idx["DW"].ffill(limit=limit).fillna(180.0)
 
         if "HS" in idx.columns:
+            # Föhn-spike filter: HS cannot increase when TA is clearly above 0 °C.
+            # Ultrasonic sensors over-read snow depth in warm air masses because the
+            # speed-of-sound temperature compensation lags behind sudden Föhn warming.
+            # We blank such increases so MeteoIO falls back to the last valid HS.
+            if "TA" in idx.columns:
+                ta_vals = idx["TA"].to_numpy(dtype=float)
+                hs_vals = idx["HS"].to_numpy(dtype=float)
+                last_valid = np.nan
+                warm_cap   = np.inf   # max allowed HS during a warm episode
+                for i in range(len(hs_vals)):
+                    ta = ta_vals[i]
+                    hs = hs_vals[i]
+                    if np.isnan(hs):
+                        continue
+                    warm = (not np.isnan(ta)) and (ta > 275.15)  # > +2 °C
+                    if warm:
+                        # Capture HS at the start of the warm episode
+                        if np.isinf(warm_cap) and not np.isnan(last_valid):
+                            warm_cap = last_valid + 0.02  # allow 2 cm tolerance
+                        # Blank any value above the cap
+                        if hs > warm_cap:
+                            hs_vals[i] = np.nan
+                        else:
+                            last_valid = hs
+                    else:
+                        warm_cap   = np.inf  # reset cap when cold again
+                        last_valid = hs
+                idx["HS"] = hs_vals
             idx["HS"] = idx["HS"].ffill(limit=limit).clip(lower=0.0).fillna(0.0)
 
         if "TSS" in idx.columns:
             tss_limit = 288  # 2 days at 10-minute resolution
+            # Blank values at the lower clip floor (exactly 210 K = -63 °C): any value
+            # sitting at this floor was clipped from something colder, indicating a sensor
+            # error — impossible for Austrian snow surfaces.
+            idx["TSS"] = idx["TSS"].where(idx["TSS"] > 210.0, np.nan)
+            # Blank values above 273.15 K (snow surface cannot exceed 0 °C); this also
+            # cleans up rows carried over from old SMET files written with the 280 K ceiling.
+            idx["TSS"] = idx["TSS"].where(idx["TSS"] <= 273.15, np.nan)
             idx["TSS"] = idx["TSS"].interpolate(method="time", limit=tss_limit)
 
-        idx["PSUM"] = float("nan")
+        # Gauge PSUM: clip to ≥ 0 but keep NaN (= -999 nodata) for rows without a
+        # gauge reading (e.g. historical data carried over from pre-gauge SMET).
+        # Rows where the gauge actually reported 0 come in as 0.0, not NaN.
+        # Non-gauge PSUM: stays NaN → -999 nodata throughout.
+        if "PSUM" in idx.columns and self._station.get("psum"):
+            idx["PSUM"] = idx["PSUM"].clip(lower=0.0)
+        else:
+            idx["PSUM"] = float("nan")
         idx["PSUM_PH"] = float("nan")
+
+        # Trim trailing rows where TA is missing (station not yet reporting fully).
+        # A partial end-row with real RH but missing TA creates a steep RH gradient
+        # that MeteoIO's linear extrapolation projects into negative territory,
+        # causing SunObject to crash when generating ISWR/ILWR.
+        if "TA" in idx.columns:
+            last_ta = idx["TA"].last_valid_index()
+            if last_ta is not None:
+                idx = idx.loc[:last_ta]
+
         return idx.reset_index()
 
 
