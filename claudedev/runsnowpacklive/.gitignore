@@ -1,0 +1,26 @@
+# snowpack_steiermark/.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+*.log
+data/smet/*.smet
+data/smet/*.csv
+data/sno/*.sno
+data/ini/*.ini
+state/last_download.json
+logs/
+
+# .pro/.haz/.sno output files can exceed GitHub's 100 MB limit; exclude from git
+data/pro/*.pro
+data/pro/*.haz
+data/pro/*.sno
+
+!data/pro/.gitkeep
+!data/avapro_output/.gitkeep
+!data/smet/.gitkeep
+!data/sno/.gitkeep
+!data/ini/.gitkeep
+!logs/.gitkeep
